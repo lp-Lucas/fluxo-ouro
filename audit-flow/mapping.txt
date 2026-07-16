@@ -1,0 +1,2 @@
+a.png = prompt_95 (76 palavras, Claude como saiu)
+b.png = prompt_40 (43 palavras, cortado)

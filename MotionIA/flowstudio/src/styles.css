@@ -1,0 +1,359 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #080808;
+  --node-bg:  #111;
+  --border:   #1e1e1e;
+  --input-bg: #0a0a0a;
+  --text:     #e2e2e2;
+  --muted:    #3a3a3a;
+  --label:    #252525;
+
+  --c-prompt: #0033ff;
+  --c-image:  #22cc66;
+  --c-config: #9933ff;
+  --c-video:  #ff6600;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ── React Flow overrides ─────────────────────── */
+.react-flow__background { background: var(--bg) !important; }
+
+.react-flow__controls {
+  background: #0d0d0d !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6) !important;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border-bottom-color: var(--border) !important;
+  fill: var(--muted) !important;
+}
+.react-flow__controls-button:hover { fill: var(--text) !important; }
+
+.react-flow__minimap {
+  background: #0a0a0a !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+}
+.react-flow__minimap-mask { fill: rgba(8,8,8,0.7) !important; }
+
+.react-flow__handle {
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  border-width: 2px !important;
+  transition: transform 0.12s !important;
+}
+.react-flow__handle:hover { transform: scale(1.4) !important; }
+.react-flow__handle-left  { left:  -6px !important; }
+.react-flow__handle-right { right: -6px !important; }
+
+.react-flow__edge-path { stroke-width: 2 !important; }
+
+/* ── Node base ────────────────────────────────── */
+.rf-node {
+  background: var(--node-bg);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  min-width: 260px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.65);
+  font-size: 12px;
+  position: relative;
+  overflow: visible;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.react-flow__node.selected .rf-node {
+  border-color: #333;
+  box-shadow: 0 0 0 1px #333, 0 12px 48px rgba(0,0,0,0.8);
+}
+
+.rf-node-header {
+  padding: 9px 13px;
+  border-radius: 10px 10px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  cursor: grab;
+}
+.rf-node-header:active { cursor: grabbing; }
+
+.rf-node-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Handle colors ────────────────────────────── */
+.handle-prompt { background: var(--c-prompt) !important; border-color: #0022aa !important; }
+.handle-image  { background: var(--c-image)  !important; border-color: #1a9944 !important; }
+.handle-config { background: var(--c-config) !important; border-color: #6611cc !important; }
+.handle-video  { background: var(--c-video)  !important; border-color: #cc4400 !important; }
+
+/* ── Handle type pills (visual) ─────────────────── */
+.handle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.handle-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Form controls ────────────────────────────── */
+.rf-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  color: var(--label);
+  margin-bottom: 5px;
+}
+
+.rf-input, .rf-textarea, .rf-select {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 10px;
+  width: 100%;
+  font-family: inherit;
+  resize: none;
+  transition: border-color 0.15s;
+}
+.rf-input:focus, .rf-textarea:focus, .rf-select:focus {
+  outline: none;
+  border-color: #2a2a2a;
+}
+.rf-select option { background: #0a0a0a; }
+
+.rf-textarea.mono {
+  font-family: 'Cascadia Code', 'SF Mono', 'Consolas', monospace;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.rf-row { display: flex; gap: 8px; }
+.rf-row > * { flex: 1; min-width: 0; }
+
+.rf-char-count { font-size: 10px; color: var(--label); text-align: right; }
+.rf-char-count.warn { color: #e8a020; }
+
+/* ── Image preview ────────────────────────────── */
+.rf-img-preview {
+  width: 100%;
+  border-radius: 6px;
+  display: block;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  max-height: 160px;
+  object-fit: cover;
+}
+
+.rf-upload-zone {
+  background: var(--input-bg);
+  border: 1px dashed #2a2a2a;
+  border-radius: 7px;
+  color: #333;
+  padding: 22px 12px;
+  text-align: center;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color 0.15s, color 0.15s;
+  line-height: 1.6;
+}
+.rf-upload-zone:hover { border-color: #444; color: #888; }
+.rf-upload-zone .icon { font-size: 22px; display: block; margin-bottom: 4px; }
+
+/* ── Status badges ────────────────────────────── */
+.rf-status {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 5px;
+  text-align: center;
+  border: 1px solid transparent;
+}
+.rf-status.idle    { background: #0d0d0d; color: #2a2a2a; border-color: #1a1a1a; }
+.rf-status.running { background: #0a1230; color: #4477ff; border-color: #0f2060; }
+.rf-status.done    { background: #0a1f12; color: #22cc66; border-color: #0f401e; }
+.rf-status.error   { background: #1f0a0a; color: #ff4444; border-color: #401010; }
+
+/* ── Generate button ──────────────────────────── */
+.rf-gen-btn {
+  background: linear-gradient(135deg, #002eee 0%, #001daa 100%);
+  border: none;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 10px 16px;
+  cursor: pointer;
+  width: 100%;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: opacity 0.15s, transform 0.1s;
+}
+.rf-gen-btn:hover:not(:disabled) { opacity: 0.85; }
+.rf-gen-btn:active:not(:disabled) { transform: scale(0.97); }
+.rf-gen-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── Spinner ──────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.rf-spinner {
+  width: 11px; height: 11px;
+  border: 2px solid rgba(255,255,255,0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Video preview in node ────────────────────── */
+.rf-video-shell {
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 9 / 16;
+  width: 100%;
+  max-width: 200px;
+  margin: 0 auto;
+  position: relative;
+}
+.rf-video-shell video {
+  width: 100%; height: 100%;
+  object-fit: cover; display: block;
+}
+.rf-video-placeholder {
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: #1e1e1e; font-size: 28px;
+}
+
+.rf-node-footer {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.rf-small-btn {
+  flex: 1;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 5px 8px;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  transition: all 0.12s;
+  display: block;
+}
+.rf-small-btn:hover { border-color: #333; color: var(--text); }
+
+/* ── Left panel ───────────────────────────────── */
+.fs-panel {
+  background: #0c0c0c;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 12px;
+  width: 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.7);
+  user-select: none;
+}
+.fs-logo {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.02em;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.fs-logo span { color: #0033ff; }
+
+.fs-section {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--label);
+  padding: 6px 0 3px;
+  text-transform: uppercase;
+}
+
+.fs-node-btn {
+  background: #111;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 7px;
+  color: #888;
+  font-size: 12px;
+  padding: 7px 9px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s;
+  display: block;
+  width: 100%;
+}
+.fs-node-btn:hover { background: #161616; color: var(--text); border-left-color: currentColor; }
+
+.fs-divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+.fs-action-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: #444;
+  font-size: 11px;
+  padding: 6px 9px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s;
+  width: 100%;
+}
+.fs-action-btn:hover { border-color: #333; color: #aaa; }
+.fs-action-btn.danger:hover { border-color: #4a1010; color: #ff4444; }
+
+/* ── Error log textarea ───────────────────────── */
+.rf-error-log {
+  font-size: 10px;
+  color: #cc3333;
+  background: #100808;
+  border: 1px solid #2a1010;
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 80px;
+  overflow-y: auto;
+  word-break: break-word;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+}

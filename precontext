@@ -1,0 +1,84 @@
+# CONTEXTO DO PROJETO — Fluxo Ouro (Editor de Vídeo All-in-One com IA)
+
+## Visão geral
+Aplicação web de edição de vídeo 100% autossuficiente, assistida por IA. Recebe um vídeo bruto e entrega o vídeo final exportado **sem depender de NENHUM aplicativo externo de edição** (sem After Effects, Premiere, etc.). TUDO acontece dentro do próprio site, em um fluxo único e contínuo.
+
+## Requisito-chave de desempenho
+- **Tempo total do fluxo: 20 a 30 minutos por vídeo** (do upload do bruto até o export final).
+- Etapas otimizadas para caber nessa janela: processos pesados (transcrição, render, geração de imagem, motion) rodam assíncronos/paralelizados com feedback de progresso, sem travar a UI.
+
+## Restrição central (não negociável)
+- **Autossuficiência total de edição**: render, compositing, tipografia, legendas, zooms, popups e motion são feitos DENTRO do site. Nada é exportado para edição externa e reimportado.
+- Dependências externas permitidas (apenas via API, com resultado retornando e montado automaticamente no site):
+  - **Seedance** → animação/motion
+  - **API de geração de imagem** → criação das telas de design (ver seção abaixo)
+
+## Stack alvo
+- Frontend/Editor/Render: React + Remotion (render e compositing nativos)
+- Transcrição: faster-whisper
+- Motion: Seedance (via API)
+- Geração de imagem: **Gemini (gratuita) inicialmente → migração futura para OpenAI/ChatGPT**
+- Linguagem principal: PT-BR
+
+## Geração de imagem (provider abstraído)
+- As telas de design (frames que vão para o Seedance animar) são geradas por **API de geração de imagem**.
+- **Fase atual**: API gratuita do **Gemini**.
+- **Fase futura**: migrar para a API de imagem da **OpenAI/ChatGPT**.
+- **Requisito de arquitetura**: implementar via **camada de abstração / adapter** (interface única `ImageProvider`), de modo que trocar Gemini → OpenAI seja só plugar outro provider, sem reescrever o FLOW. Chaves e seleção de provider configuráveis.
+
+## Pipeline principal (Fluxo Ouro) — fluxo único, 20–30 min
+
+### 1. INGESTÃO
+- Entrada: vídeo bruto.
+
+### 2. TRANSCRIÇÃO (TRANSC)
+- Transcrição com timestamps (faster-whisper). **Fonte de verdade** reutilizada por todas as etapas seguintes.
+
+### 3. CORREÇÃO
+- Corrige a transcrição mantendo timestamps alinhados.
+
+### 4. LEGENDA
+- Legendas a partir da transcrição corrigida (não re-transcreve). Estilo karaokê, render interno. Realimenta o EDITOR.
+
+### 5. EDITOR (núcleo — tudo nativo)
+- **AUTOCUT / Decupagem automática**: corte automático pela transcrição (silêncios, erros, segmentação).
+  - **ZOOMS**: zooms automáticos como sub-etapa.
+- **POPUPS**: inserção via presets.
+- Integra LEGENDA. Comunicação bidirecional com FLOW.
+
+### 6. FLOW (motion pipeline — TOTALMENTE CUSTOMIZÁVEL)
+**Requisito central**: o FLOW deve ser **totalmente editável/manualmente intervencionável** em todos os pontos. Se qualquer etapa der erro (imagem ruim, motion falho, timecode errado), o usuário pode corrigir/refazer/ajustar manualmente sem quebrar o fluxo. Nada é "caixa-preta" travada.
+
+- **Detecção de pontos de motion**: identifica **3 pontos** do vídeo (pela transcrição) onde motion se encaixa e exibe quais são — com possibilidade de editar/mover/adicionar/remover pontos manualmente.
+- **DESIGN**: monta as telas de design internamente. As imagens são **geradas pela API de imagem (Gemini → futuramente OpenAI)**. Cada tela é editável: regenerar, ajustar prompt, substituir, editar manualmente antes de animar.
+- **MOTION**:
+  1. Seedance anima as telas.
+  2. Resultado vai para **aprovação** dentro do site — com opção de reprovar, reajustar e reenviar.
+  3. Aprovado → encaixado automaticamente no **timecode certo** (com ajuste manual permitido).
+- **EXPORT**: render e exportação final pelo próprio site (Remotion).
+
+## Princípios de arquitetura
+- **All-in-one de edição**: nenhuma dependência de software externo de edição. Só APIs (Seedance, geração de imagem) com resultado montado no site.
+- **FLOW editável ponta a ponta**: cada artefato (ponto de motion, imagem gerada, animação, timecode) é inspecionável e corrigível manualmente. Tratamento de erro = poder intervir, não recomeçar do zero.
+- **Provider de imagem abstraído**: interface `ImageProvider` única; Gemini agora, OpenAI depois, troca sem refatorar.
+- **Performance-first**: assíncrono/paralelizado para fechar 20–30 min.
+- **Modular**: cada etapa é módulo independente (construção incremental).
+- **Transcrição como fonte única**: legendas, decupagem e detecção de motion derivam dela.
+- **Timeline em schema JSON**: timeline única e versionável (cortes, zooms, popups, legendas, blocos de motion, imagens, animações).
+- **Aprovação humana**: obrigatória no motion; intervenção manual disponível em todo o FLOW.
+
+## Mapa de dependências;
+
+VIDEO bruto → TRANSC → CORREÇÃO → LEGENDA → EDITOR (tudo nativo)
+↓                            ↑↓
+EDITOR ←──────────────────────────┘
+├── AUTOCUT → ZOOMS
+├── POPUPS (presets)
+└──→← FLOW → EXPORT (render interno)
+├── DESIGN (img API: Gemini→OpenAI) → MOTION (Seedance)
+│        ↳ tudo editável/corrigível manualmente
+└── aprovação → timecode → export
+
+
+## Estado atual
+Apenas o pré-contexto / espinha dorsal. Módulos implementados um de cada vez. Não assumir implementação além do solicitado. Nunca introduzir dependência de editor externo. FLOW sempre editável manualmente. Geração de imagem sempre via camada de provider abstraída.

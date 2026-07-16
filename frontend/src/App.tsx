@@ -1,0 +1,438 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Cut, Zoom, Popup, Word, SupportPopup, FullscreenPopup, TranscriptSegment, Music } from "../../shared/timeline";
+import { DEFAULT_POPUP_TRANSITION } from "../../shared/timeline";
+import { TranscriptEditor } from "./modules/correcao/TranscriptEditor";
+import { KaraokePreview } from "./modules/legenda/KaraokePreview";
+import { Editor } from "./modules/editor/Editor";
+import { ExportPanel } from "./modules/export/ExportPanel";
+import { DEFAULT_STYLE, type CaptionStyle } from "../../shared/captionStyle";
+import { DEFAULT_COLOR, type ColorSettings, type ColorPreset } from "../../shared/color";
+import { DEFAULT_CHROMA, type ChromaSettings } from "../../shared/chroma";
+import { emptyFlow, type FlowState, type FlowMoment } from "../../shared/flow";
+import { parseCube, type ParsedLut } from "../../shared/lut";
+import type { EditorDocument, ProjectFile } from "../../shared/project";
+import { ColorPanel } from "./modules/color/ColorPanel";
+import { ChromaPanel } from "./modules/chroma/ChromaPanel";
+import { FlowPanel } from "./modules/flow/FlowPanel";
+import { MusicPanel } from "./modules/music/MusicPanel";
+import { ProjectsModal } from "./modules/projects/ProjectsModal";
+import { Dock } from "./workspace/Dock";
+import { CaptionControls } from "./modules/legenda/CaptionControls";
+import { CutTimeline } from "./modules/editor/CutTimeline";
+import { TransportBus, type TransportState } from "./workspace/transport";
+import { useHistory } from "./history/useHistory";
+
+/** Parte do documento coberta por undo/redo. */
+interface Doc {
+  transcript: TranscriptSegment[];
+  cuts: Cut[];
+  zooms: Zoom[];
+  popups: Popup[];
+  captionStyle: CaptionStyle;
+  copy: string;
+  color: ColorSettings;
+  chroma: ChromaSettings;
+  flow?: FlowState;
+  music?: Music;
+}
+const EMPTY_DOC: Doc = {
+  transcript: [], cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, copy: "",
+  color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, flow: undefined, music: undefined,
+};
+/** Metadados do vídeo/projeto que NÃO entram no undo (não mudam durante a edição). */
+interface DocExtra { sourceVideo: string; durationSec: number; width: number; height: number; }
+
+type Updater<V> = V | ((prev: V) => V);
+type SaveState = "salvo" | "salvando" | "nao_salvo" | "erro";
+
+function readVideoDims(src: string): Promise<{ w: number; h: number; dur: number }> {
+  return new Promise((resolve) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.onloadedmetadata = () => resolve({ w: v.videoWidth, h: v.videoHeight, dur: v.duration });
+    v.src = src;
+  });
+}
+
+export function App() {
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [lut, setLut] = useState<ParsedLut | null>(null);
+  const [lutName, setLutName] = useState<string | null>(null);
+  const [lutText, setLutText] = useState<string | null>(null);
+  const [lutError, setLutError] = useState<string | null>(null);
+  const [colorEnabled, setColorEnabled] = useState(true);
+
+  const { state: doc, set: setDoc, reset, undo, redo, canUndo, canRedo } = useHistory<Doc>(EMPTY_DOC);
+
+  // Projeto atual
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [docExtra, setDocExtra] = useState<DocExtra | null>(null);
+  const [showProjects, setShowProjects] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("salvo");
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+
+  const setField = <K extends keyof Doc>(key: K) => (v: Updater<Doc[K]>) =>
+    setDoc((d) => ({ ...d, [key]: typeof v === "function" ? (v as (p: Doc[K]) => Doc[K])(d[key]) : v }));
+  const setTranscript = setField("transcript");
+  const setCuts = setField("cuts");
+  const setZooms = setField("zooms");
+  const setPopups = setField("popups");
+  const setCaptionStyle = setField("captionStyle");
+  const setCopy = setField("copy");
+  const setColor = setField("color");
+  const setChroma = setField("chroma");
+  const setFlow = setField("flow");
+  const setMusic = setField("music");
+
+  const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music } = doc;
+  // Insere/atualiza os popups do FLOW por flowPhraseId (recolocar não duplica).
+  // clearIds extras: remove também popups antigos do mesmo momento (ex.: os por-frase
+  // de antes do popup unificado por momento).
+  const placeFlowPopups = (pops: Popup[], clearIds?: string[]) => setPopups((prev) => {
+    const ids = new Set([...pops.map((p) => (p as { flowPhraseId?: string }).flowPhraseId), ...(clearIds ?? [])]);
+    const kept = prev.filter((p) => !(p.type === "fullscreen" && (p as { flowPhraseId?: string }).flowPhraseId && ids.has((p as { flowPhraseId?: string }).flowPhraseId)));
+    return [...kept, ...pops].sort((a, b) => a.at - b.at);
+  });
+  const [eyedropper, setEyedropper] = useState(false); // conta-gotas (chroma)
+  const [showMask, setShowMask] = useState(false);      // ver máscara (chroma)
+  // Ponte preview ↔ timeline fixa (barra inferior) — um objeto estável por sessão.
+  const transport = useRef(new TransportBus()).current;
+
+  // PREVIEW AUTOAJUSTADO: a largura da coluna é calculada pela ALTURA disponível ×
+  // proporção do vídeo — o preview cabe INTEIRO, sem barra de rolagem interna.
+  const bandRef = useRef<HTMLDivElement>(null);
+  const [pvW, setPvW] = useState(420);
+  useEffect(() => {
+    const el = bandRef.current; if (!el || !docExtra?.width || !docExtra?.height) return;
+    const calc = () => {
+      const EXTRAS = 118; // controles sob o vídeo + paddings
+      const aspect = docExtra.width / docExtra.height;
+      const h = el.clientHeight - EXTRAS;
+      setPvW(Math.round(Math.min(el.clientWidth * 0.55, Math.max(260, h * aspect + 26))));
+    };
+    const ro = new ResizeObserver(calc);
+    ro.observe(el); calc();
+    return () => ro.disconnect();
+  }, [docExtra]);
+  const effectiveColor = colorEnabled ? color : DEFAULT_COLOR;
+
+  // refs sempre atuais (para autosave ler sem closure obsoleta)
+  const latest = useRef({ doc, docExtra, projectId });
+  latest.current = { doc, docExtra, projectId };
+
+  // ───────── LUT (igual antes) ─────────
+  async function loadLutFromText(text: string, name: string, intensity: number, colorForLut: ColorSettings) {
+    const parsed = parseCube(text);
+    const form = new FormData();
+    form.append("lut", new Blob([text], { type: "text/plain" }), name);
+    const res = await fetch("/api/lut", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? "Falha ao subir o .cube");
+    setLut(parsed); setLutName(name); setLutText(text);
+    setColor({ ...colorForLut, lut: { file: data.file, intensity } });
+  }
+  async function pickLut(file: File) {
+    setLutError(null);
+    try { await loadLutFromText(await file.text(), file.name, color.lut?.intensity ?? 1, color); }
+    catch (e) { setLut(null); setLutName(null); setLutText(null); setLutError((e as Error).message); }
+  }
+  function clearLut() {
+    setLut(null); setLutName(null); setLutText(null); setLutError(null);
+    setColor({ ...color, lut: null });
+  }
+  async function applyColorPreset(preset: ColorPreset) {
+    setLutError(null);
+    if (preset.lutText) {
+      try { await loadLutFromText(preset.lutText, `${preset.name}.cube`, preset.color.lut?.intensity ?? 1, preset.color); return; }
+      catch (e) { setLutError((e as Error).message); }
+    }
+    setLut(null); setLutName(null); setLutText(null);
+    setColor({ ...preset.color, lut: null });
+  }
+  const currentColorPreset = (name: string): ColorPreset => ({ name, color, lutText: lutText ?? undefined });
+
+  // ───────── Projetos: carregar / criar / abrir / salvar ─────────
+  function loadInto(pf: ProjectFile, file: File) {
+    const d = pf.document;
+    setDocExtra({ sourceVideo: d.sourceVideo, durationSec: d.durationSec, width: d.width, height: d.height });
+    reset({ transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music });
+    setVideoFile(file);
+    setProjectId(pf.meta.id); setProjectName(pf.meta.name);
+    setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
+    setShowProjects(false); setBusy(null);
+  }
+
+  async function criarProjeto(name: string, video: File) {
+    setBusy("Transcrevendo o vídeo… (pode demorar)");
+    try {
+      const form = new FormData(); form.append("video", video);
+      const r = await fetch("/api/transcribe", { method: "POST", body: form });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Falha na transcrição");
+      const url = URL.createObjectURL(video);
+      const dims = await readVideoDims(url); URL.revokeObjectURL(url);
+      const document: EditorDocument = {
+        sourceVideo: data.videoFile, durationSec: data.durationSec ?? dims.dur,
+        width: dims.w, height: dims.h, transcript: data.transcript,
+        cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, copy: "",
+      };
+      const pr = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
+      const pf = await pr.json();
+      if (!pr.ok) throw new Error(pf.error ?? "Falha ao criar projeto");
+      setLut(null); setLutName(null); setLutText(null);
+      loadInto(pf, video);
+    } catch (e) { setBusy(null); alert("Erro ao criar projeto: " + (e as Error).message); }
+  }
+
+  async function abrirProjeto(id: string) {
+    if (!confirmarDescartar()) return;
+    setBusy("Abrindo projeto…");
+    try {
+      const r = await fetch(`/api/projects/${id}`);
+      const pf: ProjectFile = await r.json();
+      if (!r.ok) throw new Error((pf as unknown as { error: string }).error ?? "Falha ao abrir");
+      const vr = await fetch(pf.document.sourceVideo);
+      const blob = await vr.blob();
+      const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
+      // LUT do projeto → parseia p/ o preview
+      if (pf.document.color?.lut?.file) {
+        try { const t = await (await fetch(pf.document.color.lut.file)).text(); setLut(parseCube(t)); setLutName("LUT do projeto"); setLutText(t); }
+        catch { setLut(null); setLutName(null); setLutText(null); }
+      } else { setLut(null); setLutName(null); setLutText(null); }
+      loadInto(pf, file);
+    } catch (e) { setBusy(null); alert("Erro ao abrir projeto: " + (e as Error).message); }
+  }
+
+  const buildDoc = (): EditorDocument => {
+    const { doc: d, docExtra: e } = latest.current;
+    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, copy: d.copy };
+  };
+
+  const salvar = useCallback(async () => {
+    const id = latest.current.projectId;
+    if (!id || !latest.current.docExtra) return;
+    setSaveState("salvando");
+    try {
+      const r = await fetch(`/api/projects/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: buildDoc() }) });
+      const pf = await r.json();
+      if (!r.ok) throw new Error(pf.error ?? "Falha ao salvar");
+      setSaveState("salvo"); setLastSavedAt(Date.now());
+    } catch { setSaveState("erro"); }
+  }, []);
+
+  // Marca "não salvo" quando o documento muda (após ter um projeto aberto).
+  useEffect(() => {
+    if (projectId) setSaveState((s) => (s === "salvo" ? "nao_salvo" : s));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc]);
+
+  // Autosave: 3s após a última mudança (debounce → não dispara durante o arrasto).
+  useEffect(() => {
+    if (!projectId || saveState !== "nao_salvo") return;
+    const t = setTimeout(() => salvar(), 3000);
+    return () => clearTimeout(t);
+  }, [doc, projectId, saveState, salvar]);
+
+  // Ctrl+S salva; Ctrl+Z/Shift+Z desfaz/refaz.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (ctrl && e.key.toLowerCase() === "s") { e.preventDefault(); salvar(); return; }
+      if (ctrl && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo, salvar]);
+
+  // Aviso ao fechar/recarregar com alterações não salvas.
+  useEffect(() => {
+    const h = (e: BeforeUnloadEvent) => { if (saveState !== "salvo") { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [saveState]);
+
+  function confirmarDescartar(): boolean {
+    if (saveState === "salvo" || !projectId) return true;
+    return confirm("Há alterações não salvas. Deseja descartá-las?");
+  }
+
+  // ───────── edições ─────────
+  const addCuts = (novos: Cut[]) => setCuts((prev) => [...prev, ...novos].sort((a, b) => a.start - b.start));
+  // Substitui SÓ os cortes vindos da copy (prefixo cut-copy-), preservando os demais.
+  const applyCopyCuts = (copyCuts: Cut[]) =>
+    setCuts((prev) => [...prev.filter((c) => !c.id.startsWith("cut-copy-")), ...copyCuts].sort((a, b) => a.start - b.start));
+  const addPopup = (word: Word) => {
+    const p: SupportPopup = {
+      id: `popup-${Date.now()}`, type: "support", at: +word.start.toFixed(3), duration: 2.5,
+      source: "manual", transition: { ...DEFAULT_POPUP_TRANSITION }, preset: "keyword",
+      content: { text: word.text }, layout: { x: 50, y: 30, scale: 1 },
+    };
+    setPopups((prev) => [...prev, p].sort((a, b) => a.at - b.at));
+  };
+
+  /**
+   * MOTION manual (modo "motion" da transcrição, igual ao popup): o trecho selecionado
+   * vira UM momento do FLOW com uma frase (status "detected" — segue o fluxo normal de
+   * design/animação). Teto de 5 momentos no vídeo (detecção + manuais).
+   */
+  const addFlowMoment = (wordStart: number, wordEnd: number) => {
+    const words = transcript.flatMap((s) => s.words);
+    const text = words.slice(wordStart, wordEnd + 1).map((w) => w.text).join(" ").trim();
+    if (!text) return;
+    const cur = flow ?? emptyFlow();
+    if (cur.moments.length >= 5) { alert("Máximo de 5 momentos de motion — remova um no painel FLOW antes de adicionar outro."); return; }
+    const id = Date.now().toString(36);
+    const m: FlowMoment = {
+      id: `moment-man-${id}`, wordStart, wordEnd, reason: "Manual (escolhido na transcrição)",
+      phrases: [{ id: `phrase-man-${id}`, wordStart, wordEnd, text, status: "detected" }],
+    };
+    setFlow({ ...cur, moments: [...cur.moments, m].sort((a, b) => a.wordStart - b.wordStart) });
+  };
+
+  const saveLabel: Record<SaveState, string> = {
+    salvo: lastSavedAt ? `salvo às ${new Date(lastSavedAt).toLocaleTimeString("pt-BR")}` : "salvo",
+    salvando: "salvando…", nao_salvo: "alterações não salvas", erro: "erro ao salvar",
+  };
+
+  return (
+    <main style={{ fontFamily: "Inter, system-ui, sans-serif", height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg)", color: "var(--text)" }}>
+      {/* CSS do shell: some com os títulos internos das etapas (a janela já tem título)
+          e neutraliza as margens das <section> dos módulos dentro das janelas. */}
+      <style>{`
+        body { margin: 0; background: var(--bg); }
+        .dock-body > section { margin-top: 4px !important; }
+        .dock-body > section > h2, .preview-col > section > h2 { display: none; }
+        .dock-body { color: var(--text); }
+        .preview-col > section { margin-top: 0 !important; }
+      `}</style>
+
+      {showProjects && <ProjectsModal onOpen={abrirProjeto} onCreate={criarProjeto} busy={busy} />}
+
+      {/* BARRA SUPERIOR — projeto, salvar, undo/redo. Compacta, sem poluição. */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+        background: "var(--panel)", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 50,
+      }}>
+        <img src="/logo.svg" alt="Studio" style={{ height: 22, width: "auto", display: "block" }} />
+        {projectId && (
+          <>
+            <span style={{ fontSize: 13, color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }}>{projectName}</span>
+            <span style={{ fontSize: 12, color: saveState === "erro" ? "var(--red)" : saveState === "salvo" ? "var(--green)" : "var(--accent)" }}>
+              {saveLabel[saveState]}{saveState === "erro" && <button onClick={salvar} style={{ marginLeft: 8 }}>tentar de novo</button>}
+            </span>
+          </>
+        )}
+        <span style={{ flex: 1 }} />
+        <button onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)" style={{ ...topBtn, opacity: canUndo ? 1 : 0.35 }}>↶</button>
+        <button onClick={redo} disabled={!canRedo} title="Refazer (Ctrl+Shift+Z)" style={{ ...topBtn, opacity: canRedo ? 1 : 0.35 }}>↷</button>
+        {projectId && (
+          <>
+            <button onClick={salvar} style={topBtn}>Salvar</button>
+            <button onClick={() => { if (confirmarDescartar()) setShowProjects(true); }} style={topBtn}>Projetos</button>
+          </>
+        )}
+      </div>
+
+      {!projectId && !showProjects && (
+        <p style={{ color: "var(--muted)", padding: 24 }}>Nenhum projeto aberto. <button onClick={() => setShowProjects(true)}>Abrir projetos</button></p>
+      )}
+
+      {videoFile && (
+        <div ref={bandRef} style={{ display: "flex", gap: 12, padding: 12, alignItems: "stretch", flex: 1, minHeight: 0 }}>
+          {/* PREVIEW — janela FIXA: dimensionada pra mostrar tudo, sem rolagem */}
+          <div className="preview-col fo-card" style={{
+            flex: "0 0 auto", width: pvW, overflow: "hidden",
+            background: "var(--panel)", color: "var(--text)", borderRadius: 12, border: "1px solid var(--border)",
+            padding: 12,
+          }}>
+            <KaraokePreview videoFile={videoFile} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
+              cuts={cuts} onCutsChange={setCuts} zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
+              chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}
+              onPickKeyColor={(rgb) => { setChroma({ ...chroma, keyColor: rgb }); setEyedropper(false); }} />
+          </div>
+
+          {/* ABAS (dock horizontal) — clique abre; arraste a aba pra realocar */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
+            <Dock panels={[
+              { id: "roteiro", title: "1 · Roteiro & Correção", node: (
+                <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <TranscriptEditor transcript={transcript} onChange={setTranscript} copy={copy} onCopyChange={setCopy} onAddCuts={addCuts} onApplyCopyCuts={applyCopyCuts} onAddPopup={addPopup} onAddFlowMoment={addFlowMoment} />
+                  </div>
+                  {/* Estilo das legendas — recolhível, pra transcrição reinar na altura */}
+                  <details style={{ flexShrink: 0, borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 8 }}>
+                    <summary style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", cursor: "pointer", userSelect: "none" }}>
+                      Estilo das legendas
+                    </summary>
+                    <div style={{ maxHeight: "42vh", overflowY: "auto", paddingTop: 8 }}>
+                      <CaptionControls style={captionStyle} onChange={setCaptionStyle} />
+                    </div>
+                  </details>
+                </div> ) },
+              { id: "cortes", title: "2 · Cortes & Timeline", node: (
+                <Editor transcript={transcript} onTranscriptChange={setTranscript} durationSec={docExtra?.durationSec ?? 0} copy={copy}
+                  cuts={cuts} onCutsChange={setCuts} zooms={zooms} onZoomsChange={setZooms} popups={popups} onPopupsChange={setPopups}
+                  videoFile={videoFile} transport={transport} /> ) },
+              { id: "cor", title: "3 · Cor", startCollapsed: true, node: (
+                <ColorPanel color={color} onChange={setColor} enabled={colorEnabled} onToggleEnabled={setColorEnabled}
+                  onPickLut={pickLut} onClearLut={clearLut} lutName={lutName} lutError={lutError}
+                  onApplyPreset={applyColorPreset} makePreset={currentColorPreset} /> ) },
+              { id: "chroma", title: "4 · Chroma", startCollapsed: true, node: (
+                <ChromaPanel chroma={chroma} onChange={setChroma}
+                  eyedropper={eyedropper} onToggleEyedropper={setEyedropper}
+                  showMask={showMask} onToggleShowMask={setShowMask} /> ) },
+              { id: "musica", title: "5 · Música", startCollapsed: true, node: (
+                <MusicPanel music={music} onChange={setMusic} /> ) },
+              { id: "flow", title: "6 · FLOW — Motion Design", startCollapsed: true, node: (
+                <FlowPanel transcript={transcript} cuts={cuts} durationSec={docExtra?.durationSec ?? 0} copy={copy}
+                  projectId={projectId} flow={flow} onFlowChange={setFlow} onPlacePopups={placeFlowPopups}
+                  flowPopups={popups.filter((p) => p.type === "fullscreen" && (p as { flowPhraseId?: string }).flowPhraseId) as FullscreenPopup[]}
+                  onPatchFlowPopup={(id, patch) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))}
+                  videoFile={videoFile} /> ) },
+              { id: "export", title: "7 · Exportar", startCollapsed: true, node: (
+                <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
+                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} /> ) },
+            ]} />
+          </div>
+        </div>
+      )}
+
+      {/* TIMELINE FIXA — barra inferior de largura total, sempre visível */}
+      {videoFile && (
+        <div style={{ flex: "0 0 auto", background: "var(--panel)", borderTop: "1px solid var(--border)", padding: "8px 16px 12px" }}>
+          <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
+            words={transcript.flatMap((s) => s.words)} />
+        </div>
+      )}
+    </main>
+  );
+}
+
+/** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
+ *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
+function TimelineDock({ bus, videoFile, cuts, onCutsChange, words }: {
+  bus: TransportBus; videoFile: File; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
+}) {
+  const [meta, setMeta] = useState({ duration: bus.state.duration, playing: bus.state.playing });
+  useEffect(() => bus.subscribe((s: TransportState) => {
+    setMeta((m) => (m.duration === s.duration && m.playing === s.playing) ? m : { duration: s.duration, playing: s.playing });
+  }), [bus]);
+  // adapter: TransportBus → fonte de tempo imperativa do CutTimeline
+  const clock = useMemo(() => ({
+    get time() { return bus.state.time; },
+    subscribe: (f: (t: number) => void) => bus.subscribe((s: TransportState) => f(s.time)),
+  }), [bus]);
+  if (meta.duration <= 0) return null;
+  return (
+    <CutTimeline videoFile={videoFile} duration={meta.duration} cuts={cuts} onCutsChange={onCutsChange}
+      words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing} />
+  );
+}
+
+/** Botão da barra superior (discreto, tema escuro). Altura mínima = alvo de clique confortável. */
+const topBtn: React.CSSProperties = {
+  background: "var(--panel3)", color: "var(--text)", border: "1px solid var(--border)",
+  borderRadius: 8, padding: "4px 12px", fontSize: 13, cursor: "pointer", minHeight: 32,
+};

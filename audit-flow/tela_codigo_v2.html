@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body{
+    width:1080px;
+    height:1920px;
+    overflow:hidden;
+    position:relative;
+    background:
+      radial-gradient(ellipse 900px 700px at 50% 24%, rgba(90,45,170,0.55) 0%, rgba(40,18,80,0.0) 70%),
+      radial-gradient(ellipse 1000px 900px at 50% 100%, rgba(70,30,140,0.35) 0%, rgba(10,5,20,0) 60%),
+      linear-gradient(180deg, #120a24 0%, #0c0619 38%, #08040f 70%, #050208 100%);
+    font-family:'Poppins', sans-serif;
+  }
+
+  .bgFx{ position:absolute; inset:0; width:1080px; height:1920px; }
+
+  .glowBlob{
+    position:absolute;
+    border-radius:50%;
+    filter: blur(90px);
+    opacity:0.55;
+    pointer-events:none;
+  }
+  .blob1{
+    width:760px; height:560px;
+    top:150px; left:160px;
+    background: radial-gradient(circle, rgba(130,70,230,0.55) 0%, rgba(130,70,230,0) 70%);
+  }
+  .blob2{
+    width:520px; height:420px;
+    top:520px; left:-120px;
+    background: radial-gradient(circle, rgba(110,50,210,0.35) 0%, rgba(110,50,210,0) 70%);
+  }
+
+  .illustration{
+    position:absolute;
+    top:300px;
+    left:50%;
+    transform:translateX(-50%);
+    width:820px;
+    height:820px;
+    z-index:3;
+  }
+
+  .headline{
+    position:absolute;
+    top:1440px;
+    left:50%;
+    transform:translateX(-50%);
+    width:880px;
+    text-align:center;
+    z-index:4;
+  }
+  .headline h1{
+    font-family:'Poppins', sans-serif;
+    font-weight:800;
+    font-size:92px;
+    line-height:1.14;
+    letter-spacing:-1.5px;
+    color:#ffffff;
+    text-shadow:
+      0 0 8px rgba(255,255,255,0.85),
+      0 0 22px rgba(185,130,255,0.85),
+      0 0 52px rgba(150,90,255,0.65),
+      0 0 110px rgba(120,60,230,0.45);
+  }
+
+  .neon-line{
+    stroke:#ffffff;
+    fill:none;
+    stroke-linecap:round;
+    stroke-linejoin:round;
+    filter:
+      drop-shadow(0 0 4px rgba(185,135,255,0.95))
+      drop-shadow(0 0 12px rgba(155,95,255,0.75))
+      drop-shadow(0 0 30px rgba(120,60,220,0.5));
+  }
+  .neon-dot{
+    fill:#ffffff;
+    filter: drop-shadow(0 0 7px rgba(185,135,255,0.95)) drop-shadow(0 0 16px rgba(150,90,255,0.6));
+  }
+  .badge{
+    fill:#a35bff;
+    filter:
+      drop-shadow(0 0 10px rgba(190,140,255,1))
+      drop-shadow(0 0 26px rgba(150,90,255,0.85))
+      drop-shadow(0 0 50px rgba(120,60,220,0.55));
+  }
+  .star{
+    fill:#ffffff;
+    filter: drop-shadow(0 0 7px rgba(180,130,255,0.9)) drop-shadow(0 0 16px rgba(150,90,255,0.6));
+  }
+  .arc{
+    stroke:#8b5cf6;
+    fill:none;
+    opacity:0.32;
+  }
+</style>
+</head>
+<body>
+
+  <div class="bgFx">
+    <div class="glowBlob blob1"></div>
+    <div class="glowBlob blob2"></div>
+
+    <svg width="1080" height="1920" viewBox="0 0 1080 1920" style="position:absolute; top:0; left:0;">
+      <circle class="arc" cx="-140" cy="1360" r="760" stroke-width="2"></circle>
+      <circle class="arc" cx="1260" cy="260" r="520" stroke-width="2" opacity="0.22"></circle>
+
+      <path class="star" transform="translate(150,190) scale(1.5)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z"></path>
+      <path class="star" transform="translate(950,170) scale(1.1)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.85"></path>
+      <path class="star" transform="translate(120,1080) scale(0.9)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.75"></path>
+      <path class="star" transform="translate(970,1010) scale(1.6)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z"></path>
+      <path class="star" transform="translate(210,1790) scale(1.0)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.8"></path>
+      <path class="star" transform="translate(890,1830) scale(0.85)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.7"></path>
+      <path class="star" transform="translate(560,80) scale(0.6)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.6"></path>
+    </svg>
+  </div>
+
+  <div class="illustration">
+    <svg width="820" height="820" viewBox="0 0 900 900">
+
+      <path class="star" transform="translate(330,90) scale(0.55)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.85"></path>
+      <path class="star" transform="translate(60,190) scale(0.5)" d="M0,-20 C2,-6 6,-2 20,0 C6,2 2,6 0,20 C-2,6 -6,2 -20,0 C-6,-2 -2,-6 0,-20 Z" opacity="0.7"></path>
+
+      <g class="neon-line" transform="translate(692,16) scale(3.6)">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke-width="1.7"></path>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke-width="1.7"></path>
+      </g>
+      <circle class="badge" cx="766" cy="35" r="15"></circle>
+
+      <g>
+        <rect class="neon-line" x="55" y="210" width="170" height="95" rx="22" stroke-width="5"></rect>
+        <path class="neon-line" d="M180,305 L200,332 L222,305 Z" stroke-width="5"></path>
+        <circle class="neon-dot" cx="95" cy="257" r="5"></circle>
+        <circle class="neon-dot" cx="140" cy="257" r="5"></circle>
+        <circle class="neon-dot" cx="185" cy="257" r="5"></circle>
+      </g>
+
+      <g>
+        <rect class="neon-line" x="620" y="330" width="140" height="80" rx="18" stroke-width="4.5"></rect>
+        <path class="neon-line" d="M620,368 L588,378 L620,388 Z" stroke-width="4.5"></path>
+        <circle class="neon-dot" cx="648" cy="370" r="4.5"></circle>
+        <circle class="neon-dot" cx="680" cy="370" r="4.5"></circle>
+        <circle class="neon-dot" cx="712" cy="370" r="4.5"></circle>
+      </g>
+
+      <g transform="translate(440,130) scale(1.25) translate(-440,-130)">
+        <circle class="neon-line" cx="440" cy="170" r="72" stroke-width="6"></circle>
+
+        <path class="neon-line" d="M270,600 L270,540 Q270,290 440,290 Q610,290 610,540 L610,600" stroke-width="6"></path>
+
+        <path class="neon-line" d="M295,400 Q280,470 358,462" stroke-width="6"></path>
+        <path class="neon-line" d="M585,400 Q600,470 522,462" stroke-width="6"></path>
+
+        <rect class="neon-line" x="372" y="345" width="136" height="240" rx="22" stroke-width="6"></rect>
+        <line class="neon-line" x1="412" y1="364" x2="468" y2="364" stroke-width="5"></line>
+        <line class="neon-line" x1="412" y1="566" x2="468" y2="566" stroke-width="5"></line>
+
+        <rect class="neon-line" x="393" y="405" width="94" height="50" rx="13" stroke-width="4.5"></rect>
+        <path class="neon-line" d="M398,455 L387,471 L419,455 Z" stroke-width="4.5"></path>
+        <circle class="neon-dot" cx="414" cy="430" r="5"></circle>
+        <circle class="neon-dot" cx="440" cy="430" r="5"></circle>
+        <circle class="neon-dot" cx="466" cy="430" r="5"></circle>
+
+        <rect class="neon-line" x="350" y="428" width="36" height="62" rx="18" stroke-width="6"></rect>
+        <rect class="neon-line" x="494" y="428" width="36" height="62" rx="18" stroke-width="6"></rect>
+      </g>
+
+    </svg>
+  </div>
+
+  <div class="headline">
+    <h1>Converse agora sem atraso</h1>
+  </div>
+
+</body>
+</html>

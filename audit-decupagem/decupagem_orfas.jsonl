@@ -1,0 +1,2 @@
+{"text":"Com","whisperStart":27.8,"whisperEnd":28.18,"probability":0.711,"vadStatus":"nonspeech_class","distanciaAoSegmentoDeFalaMaisProximoMs":0,"rmsNoTrechoDbfs":-21.8,"nonSpeechClass":"breath","segNoSpeech":0.0481,"segAvgLogprob":-0.1885}
+{"text":"e","whisperStart":31.42,"whisperEnd":31.68,"probability":0.9176,"vadStatus":"nonspeech_class","distanciaAoSegmentoDeFalaMaisProximoMs":0,"rmsNoTrechoDbfs":-24.1,"nonSpeechClass":"breath","segNoSpeech":0.0481,"segAvgLogprob":-0.1885}

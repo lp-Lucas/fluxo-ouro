@@ -1,0 +1,33 @@
+{
+  "name": "motion-editor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.190",
+    "@remotion/bundler": "^4.0.482",
+    "@remotion/player": "^4.0.482",
+    "next": "16.2.9",
+    "node-html-parser": "^8.0.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "remotion": "^4.0.482"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "allowScripts": {
+    "@anthropic-ai/claude-code@2.1.190": true,
+    "esbuild@0.28.1": true,
+    "sharp@0.34.5": true
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "descricao": "Fixture do bug nonSpeech: vogal tônica 'e' (prob 0.92) mal-classificada como breath.",
+  "regioes": {
+    "vogal": {
+      "startMs": 0,
+      "endMs": 260,
+      "esperado": "vowel/speech (NÃO breath)",
+      "classificadoHoje": "breath"
+    },
+    "breath": {
+      "startMs": 460,
+      "esperado": "breath"
+    }
+  },
+  "origem": "projeto 26c524c9, 'e' @31.42s"
+}

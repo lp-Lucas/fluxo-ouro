@@ -1,0 +1,153 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   TEMA DO EDITOR — dark premium (referência: editor de áudio dark + acento laranja)
+   Tokens em CSS vars + estilo global dos primitivos (button/input/select/range).
+   Os módulos usam as vars via inline style: var(--text), var(--muted), etc.
+
+   ESCALA DE ESPAÇAMENTO (8pt, granularidade 4): todo gap/margin/padding do app usa
+   múltiplos de 4 — 4 (micro), 8 (relacionados), 12/16 (componentes), 24 (blocos),
+   32+ (seções). Nada de 5/7/10/14/18/22 ("espaçamento por sentimento").
+   RAIOS: 4 (mini), 8 (campos/chips), 12 (botões/cards), 16 (painéis), 999 (pill).
+   ──────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* paleta MONOCROMÁTICA (referência invoice: #111 base, campos #242424) */
+  --bg: #111111;            /* fundo do app */
+  --panel: #1a1a1a;         /* janelas/painéis */
+  --panel2: #202020;        /* cards internos */
+  --panel3: #2a2a2a;        /* hover / chips */
+  --field: #242424;         /* fundo de inputs */
+  --field-border: #333333;
+  --border: #2a2a2a;
+  --border-active: rgba(255, 255, 255, 0.14);
+  --text: #f2f2f2;
+  --muted: #9a9a9a;
+  --faint: #6d6d6d;
+  /* "acento" = BRANCO (monocromático): ações primárias claras com texto escuro */
+  --accent: #f2f2f2;
+  --accent-soft: rgba(255, 255, 255, 0.07);
+  --accent-text: #e8e8e8;
+  /* estado ATIVO (gradiente + relevo, como o item ativo da referência) */
+  --active-grad: linear-gradient(180deg, #3d3d3d, #313131);
+  --shadow-active: 0 10px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* semânticas SUAVES */
+  --green: #58c478;
+  --red: #e97575;
+  --blue: #9aa4c8;
+  --purple: #b3a3cf;
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+  line-height: 1.5;             /* leitura confortável (1.4–1.6) por padrão */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: rgba(255, 255, 255, 0.2); }
+
+/* hierarquia tipográfica calma: títulos de seção pequenos, espaçados, discretos */
+h2, h3 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 16px 0 8px;
+  line-height: 1.3;             /* títulos: line-height apertado */
+}
+strong { font-weight: 600; }
+p { line-height: 1.55; }
+
+/* ── primitivos ──────────────────────────────────────────────────────────── */
+
+button {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: 12px;          /* cantos suaves (referência: 12-16) */
+  /* alvo de clique ~36px vem do PADDING (13px×1.3 + 8×2 + borda) — nunca de min-height,
+     que esticaria os botões circulares pequenos (×) que fixam width/height inline. */
+  padding: 8px 16px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+button:hover:not(:disabled) { background: var(--panel3); }
+button:active:not(:disabled) { transform: translateY(1px); }  /* feedback de pressão imediato */
+button:disabled { opacity: 0.4; cursor: default; }
+button:focus-visible { outline: 2px solid #7a7a7a; outline-offset: 2px; }
+
+/* ── hover/ativo (referência do checklist): hover = fundo clareia;
+      ativo = gradiente + relevo + scale sutil ─────────────────────────────── */
+.fo-card { transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease; }
+.fo-card:hover { background: var(--panel3) !important; border-color: var(--border-active) !important; }
+.fo-active {
+  background: var(--active-grad) !important;
+  border-color: var(--border-active) !important;
+  box-shadow: var(--shadow-active);
+  transform: scale(1.02);
+  z-index: 1;
+}
+.fo-tab { transition: background 0.2s ease, color 0.2s ease; }
+.fo-tab:hover { transform: none !important; box-shadow: none !important; }
+.fo-tab:not([aria-selected="true"]):hover { color: var(--text) !important; background: rgba(255, 255, 255, 0.05) !important; }
+
+input[type="text"], input[type="number"], input[type="search"], input:not([type]), textarea, select {
+  background: var(--field);
+  color: var(--text);
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  padding: 12px;                /* respiro na escala (múltiplo de 4) */
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  transition: border-color 0.18s ease;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: #565656;
+}
+input::placeholder, textarea::placeholder { color: var(--faint); }
+
+/* ── sistema de FORMULÁRIO (referência invoice): label acima do campo,
+      grid 2 colunas, section-heads com subtítulo, divisores ──────────────── */
+.fo-sec { margin: 0 0 24px; }
+.fo-sec .t { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; line-height: 1.3; }
+.fo-sec .s { margin-top: 4px; font-size: 12px; color: var(--faint); }
+.fo-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.fo-row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.fo-field label, .fo-field > .lbl {
+  display: block; font-size: 12.5px; font-weight: 600;
+  color: var(--text); margin-bottom: 8px;   /* label→campo: relação próxima (4–8px) */
+}
+.fo-field input, .fo-field select, .fo-field textarea { width: 100%; box-sizing: border-box; }
+.fo-divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+input[type="checkbox"] { accent-color: var(--accent); }
+input[type="range"] { accent-color: var(--accent); }
+input[type="color"] { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; padding: 1px; }
+input[type="file"] { color: var(--muted); }
+input[type="file"]::file-selector-button {
+  background: var(--panel3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 999px; padding: 4px 12px; margin-right: 8px; cursor: pointer; font-size: 12px;
+}
+
+details > summary { cursor: pointer; color: var(--muted); }
+a { color: var(--accent-text); }
+hr { border: none; border-top: 1px solid var(--border); }
+
+/* vídeo/canvas dentro do preview mantêm o próprio conteúdo (nada a tematizar) */
+
+/* ── scrollbar fina, discreta ────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 999px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #464646; }

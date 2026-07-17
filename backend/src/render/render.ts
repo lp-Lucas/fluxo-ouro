@@ -33,6 +33,8 @@ export interface RenderInput {
   cuts: unknown[];
   zooms: unknown[];
   popups: unknown[];
+  /** Legendas com tempo manual; vazio = a composição deriva da transcrição. */
+  captions?: unknown[];
   style: unknown;
   durationSec: number; // duração bruta; a composição aplica os cortes
   fps: number;
@@ -63,6 +65,7 @@ export async function renderVideo(input: RenderInput): Promise<void> {
     cuts: input.cuts,
     zooms: input.zooms,
     popups: input.popups,
+    captions: input.captions ?? [],
     style: input.style,
     durationSec: input.durationSec,
     fps: input.fps,

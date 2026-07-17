@@ -201,12 +201,29 @@ export const DEFAULT_POPUP_TRANSITION: PopupTransition = {
   easing: "spring",
 };
 
+/**
+ * LEGENDA MATERIALIZADA — uma linha de legenda como DADO editável.
+ *
+ * Por padrão as linhas são DERIVADAS da transcrição (buildCaptionLines): o tempo é
+ * só "início da 1ª palavra → fim da última". Isso não dá controle manual — não há
+ * onde guardar um ajuste. Quando o usuário mexe na camada de legendas da timeline,
+ * as linhas são materializadas AQUI (copy-on-write) e passam a mandar: a partir daí
+ * preview e render leem `captions`, não a derivação.
+ *
+ * Tempo de FONTE (igual a cuts/words/popups). Os cortes continuam sendo aplicados
+ * na exibição — materializar não congela os cortes, só a linha.
+ */
 export interface Caption {
   id: string;
   start: Seconds;
   end: Seconds;
-  text: string;
-  style: "karaoke";
+  /** Palavras com timestamp — o karaokê destaca a partir daqui. Nunca vazio. */
+  words: Word[];
+  /**
+   * true = a janela foi ajustada à mão. A exibição respeita `start`/`end` mesmo que
+   * os cortes removam palavras; sem isso, a janela acompanha as palavras que sobraram.
+   */
+  locked?: boolean;
 }
 
 /** Ponto de motion detectado pela transcrição (3 por padrão), editável. */

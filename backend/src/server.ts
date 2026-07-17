@@ -30,10 +30,11 @@ import {
 } from "./projects/store.js";
 import { ProjectError } from "../../shared/project.js";
 import { buildCutPlan } from "../../shared/cutplan.js";
-import type { Cut, Word } from "../../shared/timeline.js";
+import type { Cut, Word, Caption } from "../../shared/timeline.js";
+import { realignCaptionsToWords, buildRealignWindows } from "../../shared/captions.js";
 import { renderDecupadoAudio } from "./decupagem/audio/render.js";
 import { loadMono16k } from "./decupagem/signal/audio.js";
-import { computeSpeechProbs, probsToSegments } from "./decupagem/signal/vad.js";
+import { computeSpeechProbs, probsToSegments, runVad } from "./decupagem/signal/vad.js";
 import { anchorWords } from "./decupagem/anchor.js";
 import { buildEnergyTrack } from "./decupagem/signal/energy.js";
 import { runDecupagem, planWithAi, buildRestrictTo, keeperEdges } from "./decupagem/index.js";
@@ -174,7 +175,9 @@ app.post("/api/proxy", upload.single("video"), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: "Nenhum arquivo enviado (campo 'video')." }); return; }
   const file = req.file;
   const key = String(req.body.key ?? path.parse(file.filename).name).replace(/[^a-z0-9_.-]/gi, "").slice(0, 120);
-  const out = path.join(UPLOAD_DIR, `proxy-${key}.mp4`);
+  // v2 no nome: os proxies v1 nasciam com EMPTY EDIT (+83ms vídeo / +62ms áudio, 21ms de
+  // dessincronia A/V) — b-frames + avoid_negative_ts=make_zero. Prefixo novo fura o cache.
+  const out = path.join(UPLOAD_DIR, `proxy-v2-${key}.mp4`);
   try {
     // dimensões do ORIGINAL: o front precisa delas p/ o palco WYSIWYG quando o navegador
     // NÃO consegue tocar o original (HEVC/MKV) — aí o proxy é a ÚNICA fonte visível.
@@ -186,15 +189,18 @@ app.post("/api/proxy", upload.single("video"), async (req, res) => {
           const t0 = Date.now();
           // escreve num TEMP único e RENOMEIA no fim (atômico): nunca se serve arquivo
           // pela metade, e um segundo job jamais escreve por cima do primeiro.
-          const tmp = path.join(UPLOAD_DIR, `proxy-${key}.part-${Date.now().toString(36)}.mp4`);
+          const tmp = path.join(UPLOAD_DIR, `proxy-v2-${key}.part-${Date.now().toString(36)}.mp4`);
           try {
             await runFfmpeg([
               "-y", "-i", file.path,
               // lado maior ≤ 960, mantendo proporção e dimensões pares
               "-vf", "scale=trunc(iw*min(1\\,960/max(iw\\,ih))/2)*2:trunc(ih*min(1\\,960/max(iw\\,ih))/2)*2",
-              "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15", "-pix_fmt", "yuv420p",
+              // -bf 0: sem B-frames não há DTS negativo, e o mux não desloca os streams
+              // (com make_zero, o proxy nascia com +83ms de vazio no vídeo e +62ms no
+              // áudio — 21ms de dessincronia A/V que virava "legenda fora da fala").
+              "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15", "-bf", "0", "-pix_fmt", "yuv420p",
               "-c:a", "aac", "-b:a", "128k",
-              "-movflags", "+faststart", "-avoid_negative_ts", "make_zero",
+              "-movflags", "+faststart",
               tmp,
             ], undefined, "proxy-preview");
             if (!fs.existsSync(out)) fs.renameSync(tmp, out);
@@ -474,6 +480,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
       transcript: props.transcript ?? [],
       cuts: props.cuts ?? [],
       zooms: props.zooms ?? [],
+      captions: props.captions ?? [], // legendas com tempo manual (vazio = deriva da transcrição)
       popups,
       style: props.style,
       durationSec: props.durationSec ?? 1,
@@ -716,6 +723,43 @@ app.post("/api/caption-coverage", async (req, res) => {
   } catch (e) {
     console.error("[COBERTURA] erro:", e);
     res.status(500).json({ error: (e as Error).message || "Falha na conferência de legenda" });
+  }
+});
+
+/**
+ * ALINHAR LEGENDAS COM A FALA (fino): re-transcreve cada trecho de fala do VAD em janela
+ * CURTA (≤28s — o Whisper não encadeia, o timestamp local não deriva) e adota os tempos
+ * novos SÓ nas palavras cujo texto casa com o existente (LCS com trava temporal). O texto
+ * do usuário nunca muda; fala re-ouvida sem legenda nenhuma vira linha nova.
+ * Substitui o antigo /api/anchor-captions (VAD só tinha autoridade nas fronteiras).
+ */
+app.post("/api/realign-captions", async (req, res) => {
+  try {
+    const { projectId, captions, maxWords } = req.body ?? {};
+    if (!projectId) { res.status(400).json({ error: "projectId ausente." }); return; }
+    if (!Array.isArray(captions) || captions.length === 0) {
+      res.status(400).json({ error: "Não há legendas materializadas para alinhar." }); return;
+    }
+    const pf = readProject(String(projectId));
+    // readProject hidrata sourceVideo p/ URL servida; VAD e whisper precisam do arquivo em disco.
+    const file = String(pf.document.sourceVideo).replace(/.*\//, "");
+    const video = assetFsPath(String(projectId), file);
+    if (!fs.existsSync(video)) { res.status(404).json({ error: "Vídeo fonte do projeto não encontrado." }); return; }
+
+    const t0 = Date.now();
+    // speechPadMs=0: borda REAL da fala (o pad de 30ms deslocaria as janelas).
+    const vad = await runVad(video, { speechPadMs: 0 });
+    const speech = vad.filter((s) => s.isSpeech).map((s) => ({ start: s.startMs / 1000, end: s.endMs / 1000 }));
+    const wins = buildRealignWindows(speech);
+    console.log(`[REALINHAR] ${speech.length} trechos de fala → ${wins.length} janelas; re-transcrevendo…`);
+    const fresh = (await transcribeRegionsWords(video, wins)).flat();
+    const out = realignCaptionsToWords(captions as Caption[], fresh, { maxWords: Number(maxWords) || 3 });
+    console.log(`[REALINHAR] casadas ${out.matched}/${out.total}, interpoladas ${out.interpolated}, ` +
+      `novas ${out.added} (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    res.json(out);
+  } catch (e) {
+    console.error("[REALINHAR] erro:", e);
+    res.status(500).json({ error: (e as Error).message || "Falha ao alinhar as legendas" });
   }
 });
 

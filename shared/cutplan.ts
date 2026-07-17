@@ -53,3 +53,15 @@ export function remapTime(t: Seconds, plan: CutPlan): Seconds | null {
   }
   return null;
 }
+
+/**
+ * Como `remapTime`, mas NUNCA devolve null: um tempo que caiu dentro de um corte
+ * encosta no início do próximo trecho mantido. Para coisas que não podem sumir só
+ * porque a borda caiu num corte — janela de legenda ajustada à mão, entrada de popup.
+ */
+export function remapTimeClamped(t: Seconds, plan: CutPlan): Seconds {
+  for (const s of plan.segments) {
+    if (t <= s.srcEnd) return s.outStart + Math.max(0, t - s.srcStart);
+  }
+  return plan.outDuration;
+}

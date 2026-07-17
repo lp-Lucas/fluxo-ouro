@@ -1,9 +1,9 @@
 import { AbsoluteFill, OffthreadVideo, Audio, Sequence, useCurrentFrame, useVideoConfig, delayRender, continueRender } from "remotion";
-import type { TranscriptSegment, Cut, Zoom, Popup, Word } from "../../shared/timeline";
+import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "../../shared/timeline";
 import type { CaptionStyle } from "../../shared/captionStyle";
 import { wordFx, hexToRgba, shadowCss } from "../../shared/captionStyle";
-import { activeLine, buildCaptionLines, stripCutsFromTranscript } from "../../shared/captions";
-import { buildCutPlan, remapTime, type CutPlan } from "../../shared/cutplan";
+import { activeLine, resolveCaptionLines, remapLineToOutput, type CaptionLine } from "../../shared/captions";
+import { buildCutPlan, remapTime, remapTimeClamped, type CutPlan } from "../../shared/cutplan";
 import { easedZoomScale, type ZoomLike } from "../../shared/zoom";
 import { SupportPopupView, FullscreenPopupView } from "../../frontend/src/modules/editor/popups/PopupViews";
 
@@ -16,6 +16,11 @@ export interface CaptionedVideoProps {
   cuts: Cut[];
   zooms: Zoom[];
   popups: Popup[];
+  /**
+   * Legendas com tempo manual (camada da timeline). Quando vem preenchido, MANDA sobre
+   * a derivação da transcrição — mesma regra do preview (resolveCaptionLines).
+   */
+  captions?: Caption[];
   durationSec: number;
   /**
    * Áudio decupado (WAV único, cortes já emendados com crossfade equal-power — Fase 4).
@@ -130,13 +135,14 @@ function zoomScaleAt(zooms: Zoom[], plan: CutPlan, outTime: number): number {
  * LEGENDAS — tudo com os tempos remapeados do vídeo bruto para o vídeo final.
  * Reproduz o que o preview mostra.
  */
-export function CaptionedVideo({ videoSrc, personSrc, transcript, style, cuts, zooms, popups, durationSec, audioSrc }: CaptionedVideoProps) {
+export function CaptionedVideo({ videoSrc, personSrc, transcript, style, cuts, zooms, popups, captions, durationSec, audioSrc }: CaptionedVideoProps) {
   ensureFonts(style, popups ?? []);
   ensureImages(popups ?? []);
   const frame = useCurrentFrame();
   // Evidência: o que a composição REALMENTE recebeu (aparece no output do render via onBrowserLog).
   if (frame === 0) {
     console.log(`[COMPO] popups=${popups?.length ?? 0} cuts=${cuts?.length ?? 0} zooms=${zooms?.length ?? 0} ` +
+      `captions=${captions?.length ?? 0}${captions?.length ? " (tempo manual)" : " (derivadas)"} ` +
       `font=${style?.fontFamily} mode=${style?.mode} durationSec=${durationSec} ` +
       `img0=${(popups?.[0] as { content?: { imageUrl?: string } })?.content?.imageUrl?.slice(0, 40)}`);
   }
@@ -144,33 +150,21 @@ export function CaptionedVideo({ videoSrc, personSrc, transcript, style, cuts, z
   const outTime = frame / fps;
   const plan = buildCutPlan(durationSec, cuts ?? []);
 
-  // Legendas: remove palavras cortadas e remapeia os tempos para a saída.
-  const remapped: TranscriptSegment[] = stripCutsFromTranscript(transcript, cuts ?? [])
-    .map((seg) => {
-      const words = seg.words
-        .map((w) => {
-          const s = remapTime(w.start, plan), e = remapTime(w.end, plan);
-          return s != null && e != null ? ({ ...w, start: s, end: e } as Word) : null;
-        })
-        .filter((w): w is Word => w !== null);
-      return { ...seg, words };
-    })
-    .filter((seg) => seg.words.length > 0);
+  // Legendas: resolve as linhas (manuais mandam; senão deriva) em tempo de FONTE, e
+  // remapeia cada uma p/ o tempo de saída. MESMA função do preview — se divergir aqui,
+  // o vídeo final sai diferente do que o usuário ajustou na timeline.
+  const outLines: CaptionLine[] = resolveCaptionLines(transcript, cuts ?? [], captions, style.maxWords)
+    .map((l) => remapLineToOutput(l, plan))
+    .filter((l): l is CaptionLine => l !== null);
 
-  const line = activeLine(buildCaptionLines(remapped, style.maxWords), outTime);
+  const line = activeLine(outLines, outTime);
   const zoom = zoomScaleAt(zooms ?? [], plan, outTime);
 
   // POPUPS IGNORAM OS CORTES: só o INÍCIO (at) é reposicionado pro tempo de saída;
   // a DURAÇÃO é tempo real de tela e passa intacta (o corte não encurta nem descarta
   // o popup). Se o at cai dentro de um corte, encosta no início do próximo trecho
   // mantido (nunca some). Vale pros motions do FLOW e pros popups de apoio.
-  const remapStart = (t: number): number => {
-    for (const s of plan.segments) {
-      if (t <= s.srcEnd) return s.outStart + Math.max(0, t - s.srcStart);
-    }
-    return plan.outDuration;
-  };
-  const outPopups = (popups ?? []).map((p) => ({ ...p, at: remapStart(p.at) }));
+  const outPopups = (popups ?? []).map((p) => ({ ...p, at: remapTimeClamped(p.at, plan) }));
 
   // Com áudio decupado (fonte única), os segmentos de vídeo ficam MUDOS — o som vem do
   // <Audio> global. Sem ele, cada segmento carrega o próprio áudio (fallback).

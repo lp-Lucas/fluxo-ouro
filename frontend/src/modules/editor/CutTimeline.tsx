@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Cut, Word } from "../../../../shared/timeline";
+import type { Cut, Word, Caption, TranscriptSegment } from "../../../../shared/timeline";
+import {
+  resolveCaptionLines, materializeCaptions, retimeLine, splitLineAt, mergeLines,
+  lineText, captionFromText, distributeWords, needsTimingRepair, type CaptionLine,
+} from "../../../../shared/captions";
+import { capBar, capChip, capBtnMuted, capGroup, capGroupBtn, capGroupSep, capGroupLabel } from "../legenda/CaptionToolbar";
 
 /**
  * Timeline visual de cortes com forma de onda do áudio + ZOOM.
@@ -7,14 +12,19 @@ import type { Cut, Word } from "../../../../shared/timeline";
  * - Blocos vermelhos = cortes. Arraste as BORDAS p/ ajustar (ímã nas palavras),
  *   arraste o MEIO p/ mover, clique no vazio p/ buscar o frame, arraste no vazio
  *   p/ criar um corte novo.
+ * - CAMADA DE LEGENDAS (faixa de baixo, azul): mesma gramática — arraste bordas p/
+ *   ajustar, meio p/ mover, vazio p/ criar. Só aparece com `onCaptionsChange`.
  * - Zoom (botões/slider) amplia a faixa → rola na horizontal (barra ou shift+scroll).
  *   O playhead é mantido à vista durante o play.
- * Edita `cuts` direto (onCutsChange) — undo/redo de graça.
+ * Edita `cuts`/`captions` direto — undo/redo de graça.
+ *
+ * As duas faixas vivem no MESMO canvas/scroll de propósito: é o que mantém legenda e
+ * corte alinhados no mesmo tempo sob o mesmo playhead (senão desencontram no zoom).
  */
 
 const RULER = 20;              // régua de tempo (topo)
 const WAVE = 64;               // faixa da onda
-const H = RULER + WAVE;
+const CAPS = 38;               // faixa das legendas (0 quando a camada está desligada)
 const EDGE_PX = 7;
 const HANDLE_MS = 4;
 const ZMIN = 1, ZMAX = 60;
@@ -30,6 +40,13 @@ const COL = {
   wave: "#d6d6d6",                    // onda dentro do trecho mantido
   sel: "#f2f2f2",
   temp: "rgba(255, 255, 255, 0.12)",
+  // camada de legendas
+  capBg: "#191919",                       // fundo da faixa (separa da onda)
+  capFill: "rgba(96, 150, 255, 0.22)",
+  capStroke: "rgba(140, 180, 255, 0.45)",
+  capFillLocked: "rgba(96, 150, 255, 0.38)", // ajustada à mão = mais sólida
+  capSel: "#8ab4ff",
+  capText: "#e9efff",
 };
 
 /** Passo "bonito" da régua conforme o zoom (px por segundo). */
@@ -79,10 +96,15 @@ type Drag =
   | { kind: "move"; id: string; grabT: number }
   | { kind: "create"; t0: number }
   | { kind: "seekMaybe"; downX: number; t: number }
+  | { kind: "capEdge"; id: string; side: "start" | "end" }
+  | { kind: "capMove"; id: string; grabT: number }
+  | { kind: "capCreate"; t0: number }
+  | { kind: "capSeekMaybe"; downX: number; t: number }
   | null;
 
 export function CutTimeline({
   videoFile, duration, cuts, onCutsChange, words, currentTime = 0, clock, onSeek, onPlayKept, playing,
+  captions, onCaptionsChange, transcript, maxWords = 7,
 }: {
   videoFile: File;
   duration: number;
@@ -96,7 +118,16 @@ export function CutTimeline({
   onSeek: (t: number) => void;
   onPlayKept: () => void;
   playing: boolean;
+  /** CAMADA DE LEGENDAS — só renderiza com `onCaptionsChange` + `transcript`. */
+  captions?: Caption[];
+  onCaptionsChange?: (c: Caption[]) => void;
+  transcript?: TranscriptSegment[];
+  maxWords?: number;
 }) {
+  const capsOn = !!onCaptionsChange && !!transcript;
+  const capH = capsOn ? CAPS : 0;
+  const CAP_TOP = RULER + WAVE;
+  const H = RULER + WAVE + capH;
   const buckets = Math.min(6000, Math.max(800, Math.round(duration * 50)));
   const peaks = useWaveform(videoFile, buckets);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -105,10 +136,32 @@ export function CutTimeline({
   const [vw, setVw] = useState(800);              // largura VISÍVEL
   const [zoom, setZoom] = useState(1);
   const [sel, setSel] = useState<string | null>(null);
+  const [capSel, setCapSel] = useState<string | null>(null);
   const drag = useRef<Drag>(null);
   const [tempCut, setTempCut] = useState<{ start: number; end: number } | null>(null);
+  const [tempCap, setTempCap] = useState<{ start: number; end: number } | null>(null);
 
   const cw = Math.round(vw * zoom); // largura do CONTEÚDO (desenho)
+
+  // ── camada de legendas ──
+  // O que a faixa DESENHA são as linhas resolvidas (cortes já aplicados) — o mesmo que
+  // o preview e o render mostram. O que ela EDITA é `captions` (tempo de fonte, sem
+  // cortes), casado por id.
+  const lines = useMemo(
+    () => (capsOn ? resolveCaptionLines(transcript!, cuts, captions, maxWords) : []),
+    [capsOn, transcript, cuts, captions, maxWords],
+  );
+
+  /**
+   * Copy-on-write: enquanto ninguém mexeu, as linhas seguem derivadas da transcrição
+   * (e acompanham correções de texto). O 1º ajuste congela — daí em diante a timeline
+   * manda. Evita o custo de materializar quem nunca vai ajustar nada.
+   */
+  const baseCaptions = () => (captions?.length ? captions : materializeCaptions(transcript!, maxWords));
+  const editCap = (id: string, f: (c: Caption) => Caption | null) => {
+    const next = baseCaptions().flatMap((c) => (c.id === id ? ((r) => (r ? [r] : []))(f(c)) : [c]));
+    onCaptionsChange!(next.sort((a, b) => a.start - b.start));
+  };
 
   const bounds = useMemo(() => {
     const s = new Set<number>([0, duration]);
@@ -217,9 +270,52 @@ export function CutTimeline({
       g.roundRect(tToX(tempCut.start), RULER + 4, Math.max(2, tToX(tempCut.end) - tToX(tempCut.start)), WAVE - 8, 6);
       g.fill();
     }
+
+    // ── faixa das legendas ──
+    if (capsOn) {
+      g.fillStyle = COL.capBg; g.fillRect(0, CAP_TOP, cw, capH);
+      g.fillStyle = COL.tick; g.fillRect(0, CAP_TOP, cw, 1);
+      g.font = "11px Inter, system-ui, sans-serif";
+      g.textBaseline = "middle";
+
+      for (const l of lines) {
+        const x0 = tToX(l.start), x1 = tToX(l.end);
+        const w = Math.max(2, x1 - x0 - 2);
+        if (x1 < -50 || x0 > cw + 50) continue; // fora da vista
+        const isSel = l.id === capSel;
+        g.beginPath();
+        g.roundRect(x0 + 1, CAP_TOP + 5, w, capH - 11, Math.min(6, w / 2));
+        g.fillStyle = l.locked ? COL.capFillLocked : COL.capFill; g.fill();
+        g.strokeStyle = isSel ? COL.capSel : COL.capStroke;
+        g.lineWidth = isSel ? 2 : 1; g.stroke();
+
+        // texto recortado no bloco (só quando cabe — senão vira sujeira ilegível)
+        if (w > 22) {
+          g.save();
+          g.beginPath(); g.roundRect(x0 + 1, CAP_TOP + 5, w, capH - 11, 6); g.clip();
+          g.fillStyle = COL.capText;
+          g.fillText(lineText(l), x0 + 6, CAP_TOP + capH / 2, w - 10);
+          g.restore();
+        }
+        // alças da linha selecionada
+        if (isSel) {
+          g.fillStyle = COL.capSel;
+          for (const x of [x0 + 1, x0 + 1 + w]) {
+            g.beginPath(); g.roundRect(x - 2, CAP_TOP + 7, 4, capH - 15, 2); g.fill();
+          }
+        }
+      }
+
+      if (tempCap) {
+        g.fillStyle = COL.temp;
+        g.beginPath();
+        g.roundRect(tToX(tempCap.start), CAP_TOP + 5, Math.max(2, tToX(tempCap.end) - tToX(tempCap.start)), capH - 11, 6);
+        g.fill();
+      }
+    }
     // O playhead NÃO é desenhado aqui: ele é um <div> leve (senão a onda inteira
     // seria redesenhada a cada frame → travava o preview a ~10fps).
-  }, [peaks, cuts, sel, cw, duration, tempCut]);
+  }, [peaks, cuts, sel, cw, duration, tempCut, capsOn, capH, CAP_TOP, H, lines, capSel, tempCap]);
 
   // Mantém o playhead à vista durante o play (modo legado, sem clock).
   useEffect(() => {
@@ -274,11 +370,34 @@ export function CutTimeline({
     for (const c of cuts) if (t >= c.start && t <= c.end) return c.id;
     return null;
   }
+  function hitCapEdge(x: number) {
+    for (const l of lines) {
+      if (Math.abs(x - tToX(l.start)) <= EDGE_PX) return { id: l.id, side: "start" as const };
+      if (Math.abs(x - tToX(l.end)) <= EDGE_PX) return { id: l.id, side: "end" as const };
+    }
+    return null;
+  }
+  function hitCapBody(x: number) {
+    const t = xToT(x);
+    return lines.find((l) => t >= l.start && t <= l.end)?.id ?? null;
+  }
   const localX = (e: React.PointerEvent) => e.clientX - wrapRef.current!.getBoundingClientRect().left;
+  const localY = (e: React.PointerEvent) => e.clientY - wrapRef.current!.getBoundingClientRect().top;
 
   function onDown(e: React.PointerEvent) {
     wrapRef.current!.setPointerCapture(e.pointerId);
     const x = localX(e);
+
+    // Faixa de baixo = legendas. A régua e a onda seguem sendo dos cortes.
+    if (capsOn && localY(e) >= CAP_TOP) {
+      const ce = hitCapEdge(x);
+      if (ce) { setCapSel(ce.id); drag.current = { kind: "capEdge", ...ce }; return; }
+      const cb = hitCapBody(x);
+      if (cb) { setCapSel(cb); drag.current = { kind: "capMove", id: cb, grabT: xToT(x) }; return; }
+      drag.current = { kind: "capSeekMaybe", downX: x, t: xToT(x) };
+      return;
+    }
+
     const edge = hitEdge(x);
     if (edge) { setSel(edge.id); drag.current = { kind: "edge", ...edge }; return; }
     const body = hitBody(x);
@@ -294,6 +413,37 @@ export function CutTimeline({
       if (Math.abs(x - d.downX) > HANDLE_MS) { drag.current = { kind: "create", t0: d.t }; setTempCut({ start: d.t, end: d.t }); }
       else return;
     }
+    if (d.kind === "capSeekMaybe") {
+      if (Math.abs(x - d.downX) > HANDLE_MS) { drag.current = { kind: "capCreate", t0: d.t }; setTempCap({ start: d.t, end: d.t }); }
+      else return;
+    }
+
+    // ── legendas ──
+    const c = drag.current!;
+    if (c.kind === "capCreate") {
+      setTempCap({ start: Math.min(c.t0, t), end: Math.max(c.t0, t) });
+      return;
+    }
+    if (c.kind === "capEdge") {
+      const l = lines.find((l) => l.id === c.id); if (!l) return;
+      // retimeLine estica as palavras junto → o karaokê preenche a linha inteira.
+      editCap(c.id, (cap) => (c.side === "start"
+        ? retimeLine(cap, Math.min(t, l.end - 0.05), l.end)
+        : retimeLine(cap, l.start, Math.max(t, l.start + 0.05))));
+      return;
+    }
+    if (c.kind === "capMove") {
+      const l = lines.find((l) => l.id === c.id); if (!l) return;
+      const dt = xToT(x) - c.grabT;
+      let ns = snap(l.start + dt);
+      const span = l.end - l.start;
+      if (ns < 0) ns = 0;
+      if (ns + span > duration) ns = Math.max(0, duration - span);
+      editCap(c.id, (cap) => retimeLine(cap, ns, ns + span));
+      drag.current = { kind: "capMove", id: c.id, grabT: xToT(x) };
+      return;
+    }
+
     const cur = drag.current!;
     if (cur.kind === "create") {
       setTempCut({ start: Math.min(cur.t0, t), end: Math.max(cur.t0, t) });
@@ -321,6 +471,17 @@ export function CutTimeline({
     try { wrapRef.current!.releasePointerCapture(e.pointerId); } catch { /* já solto */ }
     if (!d) return;
     if (d.kind === "seekMaybe") { onSeek(snap(d.t)); return; }
+    if (d.kind === "capSeekMaybe") { setCapSel(null); onSeek(snap(d.t)); return; }
+    if (d.kind === "capCreate" && tempCap) {
+      const a = snap(tempCap.start), b = snap(tempCap.end);
+      setTempCap(null);
+      if (b - a >= 0.05) {
+        const nova = captionFromText("nova legenda", a, b, `cap-man-${Date.now()}`);
+        if (nova) { onCaptionsChange!([...baseCaptions(), nova].sort((p, q) => p.start - q.start)); setCapSel(nova.id); }
+      }
+      return;
+    }
+    if (d.kind === "capEdge" || d.kind === "capMove") return;
     if (d.kind === "create" && tempCut) {
       const a = snap(tempCut.start), b = snap(tempCut.end);
       setTempCut(null);
@@ -347,9 +508,54 @@ export function CutTimeline({
   };
   const fmt = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
 
+  // ── ações da legenda selecionada ──
+  const selLine: CaptionLine | null = lines.find((l) => l.id === capSel) ?? null;
+  const capNudge = (side: "start" | "end", d: number) => {
+    if (!selLine) return;
+    const s = side === "start" ? Math.max(0, Math.min(selLine.end - 0.05, selLine.start + d)) : selLine.start;
+    const e = side === "end" ? Math.min(duration, Math.max(selLine.start + 0.05, selLine.end + d)) : selLine.end;
+    editCap(selLine.id, (cap) => retimeLine(cap, s, e));
+  };
+  const capSplit = () => {
+    if (!selLine) return;
+    const t = clock ? clock.time : currentTime;
+    if (t <= selLine.start + 0.02 || t >= selLine.end - 0.02) return;
+    const base = baseCaptions();
+    const alvo = base.find((c) => c.id === selLine.id); if (!alvo) return;
+    const par = splitLineAt(alvo, t);
+    if (!par) return; // divisão deixaria um lado sem palavra
+    onCaptionsChange!(base.flatMap((c) => (c.id === alvo.id ? par : [c])).sort((a, b) => a.start - b.start));
+    setCapSel(par[0].id);
+  };
+  const capMergeNext = () => {
+    if (!selLine) return;
+    const base = baseCaptions().sort((a, b) => a.start - b.start);
+    const i = base.findIndex((c) => c.id === selLine.id);
+    if (i < 0 || i + 1 >= base.length) return;
+    const fundida = mergeLines(base[i], base[i + 1]);
+    onCaptionsChange!([...base.slice(0, i), fundida, ...base.slice(i + 2)]);
+    setCapSel(fundida.id);
+  };
+  const capDelete = () => {
+    if (!selLine) return;
+    onCaptionsChange!(baseCaptions().filter((c) => c.id !== selLine.id));
+    setCapSel(null);
+  };
+  const capDistribute = () => {
+    if (!selLine) return;
+    editCap(selLine.id, (cap) => ({ ...distributeWords(cap), locked: true }));
+  };
+  const capRetext = (texto: string) => {
+    if (!selLine) return;
+    // Sem fala pra ancorar palavra a palavra: redistribui na mesma janela.
+    editCap(selLine.id, (cap) => captionFromText(texto, cap.start, cap.end, cap.id) ?? cap);
+  };
   return (
     <div style={{ marginTop: 12 }}>
-      <div ref={scrollRef} onWheel={onWheel} title="arraste no vazio p/ criar corte · shift+scroll rola"
+      <div ref={scrollRef} onWheel={onWheel}
+        title={capsOn
+          ? "onda = cortes · faixa azul = legendas (arraste bordas p/ ajustar, meio p/ mover, vazio p/ criar) · shift+scroll rola"
+          : "arraste no vazio p/ criar corte · shift+scroll rola"}
         style={{ width: "100%", overflowX: "auto", overflowY: "hidden", borderRadius: 12, border: "1px solid var(--border)" }}>
         <div ref={wrapRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
           style={{ position: "relative", width: cw, height: H, cursor: "pointer", userSelect: "none", touchAction: "none" }}>
@@ -358,7 +564,8 @@ export function CutTimeline({
               o movimento é por DOM direto (P1); sem clock, via prop currentTime (legado). */}
           <div ref={playheadRef} style={{ position: "absolute", top: 0, left: 0, height: H, pointerEvents: "none", willChange: "transform",
             transform: `translateX(${tToX(clock ? clock.time : currentTime).toFixed(1)}px)` }}>
-            <div style={{ position: "absolute", top: RULER, left: -0.75, width: 1.5, height: WAVE, background: "#eceef6" }} />
+            {/* atravessa a onda E a faixa de legendas: é a referência p/ dividir no ponto certo */}
+            <div style={{ position: "absolute", top: RULER, left: -0.75, width: 1.5, height: WAVE + capH, background: "#eceef6" }} />
             {/* badge flutuante com o tempo atual (estilo referência) */}
             <div ref={badgeRef} style={{ position: "absolute", top: 1, left: 0, transform: "translateX(-50%)",
               background: "#0a0a0e", border: "1px solid var(--border)", borderRadius: 8,
@@ -408,6 +615,49 @@ export function CutTimeline({
           </label>
           <button onClick={() => { onCutsChange(cuts.filter((c) => c.id !== sel)); setSel(null); }}
             style={{ color: "var(--red)", marginLeft: 8 }}>apagar</button>
+        </div>
+      ) : null}
+
+      {/* As ferramentas GLOBAIS das legendas (alinhar, ±50ms, avisos, re-sincronizar)
+          moram no painel "Roteiro & Correção" (CaptionToolbar) — aqui fica só o que
+          precisa da timeline: a faixa e o editor da linha selecionada. */}
+
+      {/* linha selecionada: mesmo idioma visual, borda acesa */}
+      {selLine ? (
+        <div style={{ ...capBar, borderColor: "rgba(140, 180, 255, 0.4)" }}>
+          <span style={capChip}>
+            ✎ {fmt(selLine.start)}–{fmt(selLine.end)}
+            <span style={{ color: "var(--muted)", fontWeight: 400 }}>· {(selLine.end - selLine.start).toFixed(2)}s</span>
+          </span>
+          <input value={lineText(selLine)} onChange={(e) => capRetext(e.target.value)}
+            title="editar o texto redistribui as palavras por igual na janela (perde o timing palavra-a-palavra do whisper)"
+            style={{ flex: "1 1 200px", minWidth: 140, background: "var(--panel)", color: "var(--text)",
+              border: "1px solid var(--border)", borderRadius: 8, padding: "4px 10px", fontSize: 12.5 }} />
+          <span style={capGroup} title="empurra o INÍCIO da legenda (±100ms)">
+            <span style={capGroupLabel}>início</span>
+            <button style={capGroupBtn} onClick={() => capNudge("start", -0.1)}>◀</button>
+            <span style={capGroupSep} />
+            <button style={capGroupBtn} onClick={() => capNudge("start", +0.1)}>▶</button>
+          </span>
+          <span style={capGroup} title="empurra o FIM da legenda (±100ms)">
+            <span style={capGroupLabel}>fim</span>
+            <button style={capGroupBtn} onClick={() => capNudge("end", -0.1)}>◀</button>
+            <span style={capGroupSep} />
+            <button style={capGroupBtn} onClick={() => capNudge("end", +0.1)}>▶</button>
+          </span>
+          <span style={capGroup}>
+            {/* Sem `disabled` no dividir: este componente não re-renderiza quando o tempo
+                anda (playhead por DOM direto) — um estado calculado no render congelaria
+                e travaria uma divisão legítima. capSplit lê o clock na hora do clique. */}
+            <button style={capGroupBtn} onClick={capSplit} title="divide no playhead (posicione-o dentro da legenda)">✂ dividir</button>
+            <span style={capGroupSep} />
+            <button style={capGroupBtn} onClick={capMergeNext} title="funde com a próxima legenda">⇥ juntar</button>
+            <span style={capGroupSep} />
+            <button style={{ ...capGroupBtn, color: needsTimingRepair(selLine) ? "#ffb4a2" : undefined }}
+              onClick={capDistribute}
+              title="espalha as palavras por igual na janela — conserta linha travada (palavra de ~0s ou buraco morto)">⇄ distribuir</button>
+          </span>
+          <button style={{ ...capBtnMuted, color: "var(--red)" }} onClick={capDelete}>apagar</button>
         </div>
       ) : null}
     </div>

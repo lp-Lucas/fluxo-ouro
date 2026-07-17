@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { TranscriptSegment, Cut, Zoom, Popup, Music } from "../../../../shared/timeline";
-import { activeLine, buildCaptionLines, stripCutsFromTranscript } from "../../../../shared/captions";
+import type { TranscriptSegment, Cut, Zoom, Popup, Music, Caption } from "../../../../shared/timeline";
+import { activeLine, buildCaptionLines, resolveCaptionLines, stripCutsFromTranscript } from "../../../../shared/captions";
 import { CaptionControls } from "./CaptionControls";
 import { wordFx, hexToRgba, shadowCss, type CaptionStyle } from "../../../../shared/captionStyle";
 import { PopupsOverlay } from "./PopupsOverlay";
@@ -40,6 +40,8 @@ export function KaraokePreview({
   onStyleChange,
   cuts,
   onCutsChange,
+  captions,
+  onCaptionsChange,
   zooms,
   popups,
   onAddCuts,
@@ -59,6 +61,9 @@ export function KaraokePreview({
   onStyleChange: (s: CaptionStyle) => void;
   cuts: Cut[];
   onCutsChange: (c: Cut[]) => void;
+  /** Legendas com tempo manual (vazio = derivadas da transcrição). */
+  captions?: Caption[];
+  onCaptionsChange?: (c: Caption[]) => void;
   zooms: Zoom[];
   popups: Popup[];
   onAddCuts: (c: Cut[]) => void;
@@ -199,9 +204,11 @@ export function KaraokePreview({
     setMarkStart(null);
   }
 
+  // Mesmo ponto de entrada do render (resolveCaptionLines) — é o que garante que o
+  // ajuste manual da timeline apareça igual aqui e no vídeo final.
   const lines = useMemo(
-    () => buildCaptionLines(stripCutsFromTranscript(transcript, cuts), style.maxWords),
-    [transcript, cuts, style.maxWords],
+    () => resolveCaptionLines(transcript, cuts, captions, style.maxWords),
+    [transcript, cuts, captions, style.maxWords],
   );
 
   // Cria e revoga a object URL no MESMO efeito (sobrevive ao StrictMode em dev).
@@ -481,6 +488,10 @@ export function KaraokePreview({
           onSeek={seek}
           onPlayKept={togglePlayKept}
           playing={playing}
+          captions={captions}
+          onCaptionsChange={onCaptionsChange}
+          transcript={transcript}
+          maxWords={style.maxWords}
         />
       )}
 

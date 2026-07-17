@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Cut, Zoom, Popup, Word, SupportPopup, FullscreenPopup, TranscriptSegment, Music } from "../../shared/timeline";
+import type { Cut, Zoom, Popup, Word, SupportPopup, FullscreenPopup, TranscriptSegment, Music, Caption } from "../../shared/timeline";
 import { DEFAULT_POPUP_TRANSITION } from "../../shared/timeline";
 import { TranscriptEditor } from "./modules/correcao/TranscriptEditor";
 import { KaraokePreview } from "./modules/legenda/KaraokePreview";
@@ -18,6 +18,7 @@ import { MusicPanel } from "./modules/music/MusicPanel";
 import { ProjectsModal } from "./modules/projects/ProjectsModal";
 import { Dock } from "./workspace/Dock";
 import { CaptionControls } from "./modules/legenda/CaptionControls";
+import { CaptionToolbar } from "./modules/legenda/CaptionToolbar";
 import { CutTimeline } from "./modules/editor/CutTimeline";
 import { TransportBus, type TransportState } from "./workspace/transport";
 import { useHistory } from "./history/useHistory";
@@ -34,10 +35,12 @@ interface Doc {
   chroma: ChromaSettings;
   flow?: FlowState;
   music?: Music;
+  /** Legendas com tempo manual. Vazio = derivadas da transcrição (ver shared/captions.ts). */
+  captions: Caption[];
 }
 const EMPTY_DOC: Doc = {
   transcript: [], cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, copy: "",
-  color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, flow: undefined, music: undefined,
+  color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, flow: undefined, music: undefined, captions: [],
 };
 /** Metadados do vídeo/projeto que NÃO entram no undo (não mudam durante a edição). */
 interface DocExtra { sourceVideo: string; durationSec: number; width: number; height: number; }
@@ -85,8 +88,9 @@ export function App() {
   const setChroma = setField("chroma");
   const setFlow = setField("flow");
   const setMusic = setField("music");
+  const setCaptions = setField("captions");
 
-  const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music } = doc;
+  const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music, captions } = doc;
   // Insere/atualiza os popups do FLOW por flowPhraseId (recolocar não duplica).
   // clearIds extras: remove também popups antigos do mesmo momento (ex.: os por-frase
   // de antes do popup unificado por momento).
@@ -97,6 +101,33 @@ export function App() {
   });
   const [eyedropper, setEyedropper] = useState(false); // conta-gotas (chroma)
   const [showMask, setShowMask] = useState(false);      // ver máscara (chroma)
+  const [anchoring, setAnchoring] = useState(false);    // alinhamento fino em andamento
+
+  /**
+   * Alinhamento FINO: o backend re-transcreve cada trecho de fala em janela curta
+   * (timestamps locais não derivam) e adota os tempos novos onde o TEXTO casa com o
+   * existente. Texto e linhas não mudam; fala sem legenda ganha linha nova. Leva ~30s.
+   */
+  async function realinharLegendas(base: Caption[]) {
+    if (!projectId) { alert("Salve o projeto antes (a re-transcrição lê o vídeo do projeto no servidor)."); return; }
+    setAnchoring(true);
+    try {
+      const r = await fetch("/api/realign-captions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, captions: base, maxWords: captionStyle.maxWords }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Falha ao alinhar");
+      setCaptions(data.captions as Caption[]);
+      const extras = [
+        data.added > 0 ? `${data.added} linha(s) nova(s) onde havia fala sem legenda` : "",
+        data.removed > 0 ? `${data.removed} eco(s) duplicado(s) removido(s)` : "",
+      ].filter(Boolean).join("; ");
+      alert(`Legendas alinhadas com a fala: ${data.matched} de ${data.total} palavras casadas com a re-transcrição.${extras ? ` ${extras}.` : ""}`);
+    } catch (e) {
+      alert("Erro ao alinhar: " + (e as Error).message);
+    } finally { setAnchoring(false); }
+  }
   // Ponte preview ↔ timeline fixa (barra inferior) — um objeto estável por sessão.
   const transport = useRef(new TransportBus()).current;
 
@@ -157,7 +188,7 @@ export function App() {
   function loadInto(pf: ProjectFile, file: File) {
     const d = pf.document;
     setDocExtra({ sourceVideo: d.sourceVideo, durationSec: d.durationSec, width: d.width, height: d.height });
-    reset({ transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music });
+    reset({ transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, captions: d.captions ?? [] });
     setVideoFile(file);
     setProjectId(pf.meta.id); setProjectName(pf.meta.name);
     setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
@@ -176,7 +207,7 @@ export function App() {
       const document: EditorDocument = {
         sourceVideo: data.videoFile, durationSec: data.durationSec ?? dims.dur,
         width: dims.w, height: dims.h, transcript: data.transcript,
-        cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, copy: "",
+        cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, captions: [], copy: "",
       };
       const pr = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
       const pf = await pr.json();
@@ -207,7 +238,7 @@ export function App() {
 
   const buildDoc = (): EditorDocument => {
     const { doc: d, docExtra: e } = latest.current;
-    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, copy: d.copy };
+    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, captions: d.captions, copy: d.copy };
   };
 
   const salvar = useCallback(async () => {
@@ -348,7 +379,8 @@ export function App() {
             padding: 12,
           }}>
             <KaraokePreview videoFile={videoFile} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
-              cuts={cuts} onCutsChange={setCuts} zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
+              cuts={cuts} onCutsChange={setCuts} captions={captions} onCaptionsChange={setCaptions}
+              zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
               chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}
               onPickKeyColor={(rgb) => { setChroma({ ...chroma, keyColor: rgb }); setEyedropper(false); }} />
           </div>
@@ -361,6 +393,9 @@ export function App() {
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <TranscriptEditor transcript={transcript} onChange={setTranscript} copy={copy} onCopyChange={setCopy} onAddCuts={addCuts} onApplyCopyCuts={applyCopyCuts} onAddPopup={addPopup} onAddFlowMoment={addFlowMoment} />
                   </div>
+                  {/* Ferramentas de TEMPO das legendas (alinhar com a fala, ±50ms, avisos) */}
+                  <CaptionToolbar transcript={transcript} cuts={cuts} captions={captions} onCaptionsChange={setCaptions}
+                    maxWords={captionStyle.maxWords} onAnchorToSpeech={realinharLegendas} anchoring={anchoring} />
                   {/* Estilo das legendas — recolhível, pra transcrição reinar na altura */}
                   <details style={{ flexShrink: 0, borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 8 }}>
                     <summary style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", cursor: "pointer", userSelect: "none" }}>
@@ -393,7 +428,7 @@ export function App() {
                   videoFile={videoFile} /> ) },
               { id: "export", title: "7 · Exportar", startCollapsed: true, node: (
                 <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
-                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} /> ) },
+                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} captions={captions} /> ) },
             ]} />
           </div>
         </div>
@@ -403,7 +438,8 @@ export function App() {
       {videoFile && (
         <div style={{ flex: "0 0 auto", background: "var(--panel)", borderTop: "1px solid var(--border)", padding: "8px 16px 12px" }}>
           <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
-            words={transcript.flatMap((s) => s.words)} />
+            words={transcript.flatMap((s) => s.words)}
+            captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords} />
         </div>
       )}
     </main>
@@ -412,8 +448,9 @@ export function App() {
 
 /** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
  *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
-function TimelineDock({ bus, videoFile, cuts, onCutsChange, words }: {
+function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords }: {
   bus: TransportBus; videoFile: File; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
+  captions: Caption[]; onCaptionsChange: (c: Caption[]) => void; transcript: TranscriptSegment[]; maxWords?: number;
 }) {
   const [meta, setMeta] = useState({ duration: bus.state.duration, playing: bus.state.playing });
   useEffect(() => bus.subscribe((s: TransportState) => {
@@ -427,7 +464,8 @@ function TimelineDock({ bus, videoFile, cuts, onCutsChange, words }: {
   if (meta.duration <= 0) return null;
   return (
     <CutTimeline videoFile={videoFile} duration={meta.duration} cuts={cuts} onCutsChange={onCutsChange}
-      words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing} />
+      words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing}
+      captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords} />
   );
 }
 

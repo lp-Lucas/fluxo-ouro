@@ -6,7 +6,7 @@
  * O histórico de undo/redo NÃO é persistido — só o documento atual.
  */
 
-import type { TranscriptSegment, Cut, Zoom, Popup } from "./timeline";
+import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "./timeline";
 import type { CaptionStyle } from "./captionStyle";
 import type { ColorSettings } from "./color";
 import type { ChromaSettings } from "./chroma";
@@ -15,7 +15,7 @@ import type { FlowState } from "./flow";
 import type { Music } from "./timeline";
 
 /** Versão atual do schema de projeto. Incrementar a cada mudança que exija migração. */
-export const SCHEMA_VERSION = 4; // v4: adiciona `music` (música de fundo) — opcional
+export const SCHEMA_VERSION = 5; // v5: adiciona `captions` (legendas materializadas) — opcional
 
 /**
  * Documento do editor (estado persistido). As referências de asset são strings:
@@ -38,6 +38,11 @@ export interface EditorDocument {
   flow?: FlowState;
   /** Música de fundo. Opcional. */
   music?: Music;
+  /**
+   * Legendas materializadas (camada ajustável da timeline). Vazio/ausente = as linhas
+   * são derivadas da transcrição, como sempre. Preenchido = mandam sobre a derivação.
+   */
+  captions?: Caption[];
   copy: string;
 }
 
@@ -104,6 +109,12 @@ export function migrateProject(raw: unknown): ProjectFile {
         // v3 → v4: adiciona `music` (música de fundo). Ausente = undefined.
         (file.document as { music?: Music }).music ??= undefined;
         v = 4;
+        break;
+      case 4:
+        // v4 → v5: adiciona `captions` (legendas materializadas). Vazio = segue
+        // derivando da transcrição — projeto antigo abre idêntico ao que era.
+        (file.document as { captions?: Caption[] }).captions ??= [];
+        v = 5;
         break;
       default:
         throw new ProjectError(`Não há migração definida a partir da versão ${v}.`);

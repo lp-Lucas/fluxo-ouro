@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { TranscriptSegment, Cut, Zoom, Popup } from "../../../../shared/timeline";
+import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "../../../../shared/timeline";
 import type { CaptionStyle } from "../../../../shared/captionStyle";
 import type { ColorSettings } from "../../../../shared/color";
 import type { Music } from "../../../../shared/timeline";
@@ -34,7 +34,7 @@ function capFullHD(w: number, h: number) {
  * Full HD (4K/8K são reduzidos p/ 1080p → render mais rápido).
  */
 export function ExportPanel({
-  videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, projectId,
+  videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, projectId, captions,
 }: {
   videoFile: File;
   transcript: TranscriptSegment[];
@@ -43,6 +43,8 @@ export function ExportPanel({
   cuts: Cut[];
   zooms: Zoom[];
   popups: Popup[];
+  /** Legendas com tempo manual — precisam chegar ao render, senão o vídeo sai diferente do preview. */
+  captions?: Caption[];
   color: ColorSettings;
   chroma: ChromaSettings;
   music?: Music;
@@ -95,7 +97,7 @@ export function ExportPanel({
     }
 
     const propsJson = JSON.stringify({
-      transcript, cuts, zooms, popups: popupsOut, style, color, chroma: chromaOut, music, durationSec, projectId,
+      transcript, cuts, zooms, popups: popupsOut, style, color, chroma: chromaOut, music, durationSec, projectId, captions,
       fps: 30, width: dims?.w ?? 1080, height: dims?.h ?? 1920,
     });
     form.append("props", propsJson);

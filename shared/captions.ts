@@ -1,5 +1,5 @@
-import type { TranscriptSegment, Word, Cut, Caption, Seconds } from "./timeline";
-import { remapTime, remapTimeClamped, type CutPlan } from "./cutplan";
+import type { TranscriptSegment, Word, Cut, Caption, Seconds } from "./timeline.js";
+import { remapTime, remapTimeClamped, type CutPlan } from "./cutplan.js";
 
 /**
  * Remove das legendas as palavras que caem dentro de cortes ativos.

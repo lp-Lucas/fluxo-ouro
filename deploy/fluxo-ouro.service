@@ -22,7 +22,12 @@ Type=simple
 User=fluxoouro
 Group=fluxoouro
 WorkingDirectory=/opt/fluxo-ouro/backend
-ExecStart=/usr/bin/node dist/server.js
+# ATENCAO ao caminho: o tsc compila pra dist/backend/src/, NAO pra dist/. E porque o backend
+# importa de ../../shared, entao a raiz comum que o TS calcula sobe um nivel. O `npm run
+# start` apontava pra dist/server.js desde o commit inicial e NUNCA funcionou — ninguem viu
+# porque o dev roda por tsx, que nao passa pelo build. Se mudar o layout de pastas, confira
+# aqui: `node dist/backend/src/server.js` tem que ser o mesmo do script "start".
+ExecStart=/usr/bin/node dist/backend/src/server.js
 Restart=on-failure
 RestartSec=5
 

@@ -1,4 +1,4 @@
-import type { Cut, Seconds } from "./timeline";
+import type { Cut, Seconds } from "./timeline.js";
 
 /**
  * Plano de corte: mapeia o tempo do vídeo BRUTO (fonte) para o tempo do vídeo

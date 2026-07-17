@@ -8,12 +8,12 @@
  * (import de tipo só; não cria acoplamento em runtime)
  */
 
-import type { CaptionStyle } from "./captionStyle";
-import type { ColorSettings } from "./color";
-import { DEFAULT_COLOR } from "./color";
-import type { ChromaSettings } from "./chroma";
-import { DEFAULT_CHROMA } from "./chroma";
-import type { FlowState } from "./flow";
+import type { CaptionStyle } from "./captionStyle.js";
+import type { ColorSettings } from "./color.js";
+import { DEFAULT_COLOR } from "./color.js";
+import type { ChromaSettings } from "./chroma.js";
+import { DEFAULT_CHROMA } from "./chroma.js";
+import type { FlowState } from "./flow.js";
 
 export type Seconds = number;
 

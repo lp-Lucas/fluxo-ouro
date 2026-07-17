@@ -1,4 +1,4 @@
-import type { Seconds } from "./timeline";
+import type { Seconds } from "./timeline.js";
 
 /** Um zoom (já em tempo de saída, se aplicável): início, duração e escala. */
 export interface ZoomLike { at: Seconds; duration: Seconds; scale: number; }

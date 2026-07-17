@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/free-port.mjs 3001 && tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/backend/src/server.js"
   },
   "dependencies": {
     "@remotion/bundler": "^4.0.0",

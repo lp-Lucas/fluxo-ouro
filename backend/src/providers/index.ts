@@ -1,6 +1,6 @@
-import type { ImageProvider } from "./ImageProvider";
-import { GeminiProvider } from "./GeminiProvider";
-import { OpenAIImageProvider } from "./OpenAIImageProvider";
+import type { ImageProvider } from "./ImageProvider.js";
+import { GeminiProvider } from "./GeminiProvider.js";
+import { OpenAIImageProvider } from "./OpenAIImageProvider.js";
 
 /**
  * Seleção do provider de imagem por env (`IMAGE_PROVIDER`, default openai nesta versão).
@@ -19,4 +19,4 @@ export function getImageProvider(): ImageProvider {
   }
 }
 
-export type { ImageProvider } from "./ImageProvider";
+export type { ImageProvider } from "./ImageProvider.js";

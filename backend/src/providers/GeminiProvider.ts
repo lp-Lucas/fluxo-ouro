@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ImageProvider, GenerateImageInput, GenerateImageResult } from "./ImageProvider";
+import type { ImageProvider, GenerateImageInput, GenerateImageResult } from "./ImageProvider.js";
 
 /**
  * Provider de imagem via Google Nano Banana (Gemini 2.5 Flash Image), endpoint nativo

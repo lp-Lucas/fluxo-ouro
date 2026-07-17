@@ -1,5 +1,5 @@
-import type { Word } from "./timeline";
-import { levenshtein, normalizeWord } from "./text";
+import type { Word } from "./timeline.js";
+import { levenshtein, normalizeWord } from "./text.js";
 
 /**
  * Alinhamento global palavra↔roteiro com GAPS AFINS (Gotoh) + match fuzzy.

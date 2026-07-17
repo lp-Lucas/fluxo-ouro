@@ -6,13 +6,13 @@
  * O histórico de undo/redo NÃO é persistido — só o documento atual.
  */
 
-import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "./timeline";
-import type { CaptionStyle } from "./captionStyle";
-import type { ColorSettings } from "./color";
-import type { ChromaSettings } from "./chroma";
-import { DEFAULT_CHROMA } from "./chroma";
-import type { FlowState } from "./flow";
-import type { Music } from "./timeline";
+import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "./timeline.js";
+import type { CaptionStyle } from "./captionStyle.js";
+import type { ColorSettings } from "./color.js";
+import type { ChromaSettings } from "./chroma.js";
+import { DEFAULT_CHROMA } from "./chroma.js";
+import type { FlowState } from "./flow.js";
+import type { Music } from "./timeline.js";
 
 /** Versão atual do schema de projeto. Incrementar a cada mudança que exija migração. */
 export const SCHEMA_VERSION = 5; // v5: adiciona `captions` (legendas materializadas) — opcional

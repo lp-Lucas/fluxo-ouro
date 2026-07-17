@@ -1,5 +1,5 @@
-import type { ColorSettings, ColorBasic } from "./color";
-import type { ParsedLut } from "./lut";
+import type { ColorSettings, ColorBasic } from "./color.js";
+import type { ParsedLut } from "./lut.js";
 
 /**
  * Compõe a correção de cor (correção básica + LUT do usuário + intensidade) num

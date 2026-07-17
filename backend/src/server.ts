@@ -28,6 +28,11 @@ import {
   listMetas, readProject, createProject, saveProject, renameProject, deleteProject,
   PROJECTS_ROOT, assetFsPath,
 } from "./projects/store.js";
+// Integracao com o OS (docs no monorepo: AGENTE-VIDEO-SERVICE.md).
+import { osRouter } from "./os-integration/routes.js";
+import { comVaga } from "./os-integration/queue.js";
+import { registraExecutores } from "./os-integration/executors.js";
+import { exigeStudioSession } from "./os-integration/auth.js";
 import { ProjectError } from "../../shared/project.js";
 import { buildCutPlan } from "../../shared/cutplan.js";
 import type { Cut, Word, Caption } from "../../shared/timeline.js";
@@ -94,6 +99,65 @@ const PORT = Number(process.env.PORT ?? 3001);
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "fluxo-ouro-backend" });
+});
+
+// SESSAO DO STUDIO — tem que vir ANTES de toda rota /api/* (Express e ordem de registro).
+// Em PROD o nginx REMOVE o cookie do OS, entao o X-Studio-Token (assinado pelo OS) e' a
+// UNICA prova de quem e' o usuario. Sem este middleware montado, o token viaja e ninguem
+// confere: qualquer um que alcance a porta usa o editor. /api/health fica de fora de
+// proposito (probe).
+// DEV: sem VIDEO_STUDIO_SESSION_SECRET o middleware libera — o studio roda solto no 5174
+// como sempre. Em PROD a env EXISTE e o gate vale.
+app.use("/api", exigeStudioSession);
+
+// Contrato que o OS consome: GET /health, POST /jobs, GET /jobs/:id, POST /jobs/:id/cancel.
+// Rotas IRMAS das /api/* — nao as substituem. As /api/* servem o studio no navegador; estas
+// servem o OS (Bearer VIDEO_SERVICE_TOKEN, loopback). Ver AGENTE-VIDEO-SERVICE.md secao 5.
+app.use(osRouter);
+
+// Executor de render pro job do OS. PONTE deliberada, nao refatoracao:
+//
+// O runRender e' uma funcao longa e delicada (matting, chroma, audio decupado, musica),
+// toda amarrada em `jobs.get(jobId)` e em `uploads/<filename>`. Reescrever ela pra aceitar
+// "video de qualquer lugar" e' o jeito de quebrar o export que funciona hoje. Entao aqui a
+// gente ADAPTA o mundo do job ao que o runRender ja espera:
+//   1. hard-link do video do projeto em uploads/ (link, nao copia: os videos tem GBs);
+//   2. entrada no Map `jobs`, que e' de onde o runRender le/escreve status e progresso;
+//   3. ponte de progresso (o Map usa 0..1, o contrato do OS usa 0..100).
+// Quando/se o runRender for refatorado, esta ponte sai e o executor chama ele direto.
+registraExecutores(async ({ projetoId, videoPath, props, onProgress, signal }) => {
+  const nome = path.basename(videoPath);
+  const destino = path.join(UPLOAD_DIR, nome);
+  if (!fs.existsSync(destino)) {
+    // hard-link: mesmo filesystem, custo zero, sem duplicar GBs. Fallback pra copia se o
+    // FS nao suportar (ex.: volume diferente).
+    try { fs.linkSync(videoPath, destino); } catch { fs.copyFileSync(videoPath, destino); }
+  }
+
+  const jobId = `os-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  jobs.set(jobId, { status: "preparing", progress: 0 });
+
+  // O runRender so reporta progresso escrevendo no Map. Espelha pro contrato do OS.
+  const timer = setInterval(() => {
+    const j = jobs.get(jobId);
+    if (j) onProgress(Math.round((j.progress ?? 0) * 100));
+  }, 1000);
+  // Cancelar no OS -> o runRender ve o status e aborta (mesmo caminho do timeout de matting).
+  const onAbort = () => { const j = jobs.get(jobId); if (j) j.status = "error"; };
+  signal.addEventListener("abort", onAbort);
+
+  try {
+    const fake = { filename: nome, path: destino, originalname: nome } as Express.Multer.File;
+    await runRender(jobId, fake, JSON.stringify({ ...props, projectId: projetoId }));
+    const j = jobs.get(jobId);
+    if (j?.status === "error") throw new Error(j.error ?? "render falhou");
+    if (!j?.outPath) throw new Error("render terminou sem arquivo de saida");
+    return j.outPath;
+  } finally {
+    clearInterval(timer);
+    signal.removeEventListener("abort", onAbort);
+    jobs.delete(jobId);
+  }
 });
 
 /**
@@ -255,7 +319,12 @@ app.post("/api/render", (req, res) => {
     const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     jobs.set(jobId, { status: "preparing", progress: 0 });
     res.json({ jobId });
-    runRender(jobId, videoFile, req.body.props, imageMap, chromaBgPath).catch((e) => {
+    // TETO COMPARTILHADO (AGENTE-VIDEO-SERVICE.md secao 7): o render so comeca quando ha
+    // vaga dentro do limite de workers — o MESMO contador que a fila do OS usa. Sem isto,
+    // este endpoint (o botao "Renderizar MP4" do studio, o mais usado) furaria o teto e
+    // levaria os 8 nucleos da KVM8, que e a maquina de PROD dos 220 clientes.
+    // O job fica em "preparing" enquanto espera vaga — a UI ja trata esse estado.
+    comVaga(() => runRender(jobId, videoFile, req.body.props, imageMap, chromaBgPath)).catch((e) => {
       jobs.set(jobId, { status: "error", progress: 0, error: (e as Error).message });
     });
   });

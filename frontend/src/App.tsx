@@ -22,6 +22,7 @@ import { CaptionToolbar } from "./modules/legenda/CaptionToolbar";
 import { CutTimeline } from "./modules/editor/CutTimeline";
 import { TransportBus, type TransportState } from "./workspace/transport";
 import { useHistory } from "./history/useHistory";
+import { getClienteSlug } from "./os-session";
 
 /** Parte do documento coberta por undo/redo. */
 interface Doc {
@@ -347,6 +348,19 @@ export function App() {
         background: "var(--panel)", borderBottom: "1px solid var(--border)", position: "sticky", top: 0, zIndex: 50,
       }}>
         <img src="/logo.svg" alt="Studio" style={{ height: 22, width: "auto", display: "block" }} />
+        {/* Cliente vindo do OS (?cliente=). Fora do OS nao aparece — o studio segue solto. */}
+        {getClienteSlug() && (
+          <span
+            title="Cliente selecionado no Blue Ocean OS"
+            style={{
+              fontSize: 11, fontWeight: 600, letterSpacing: 0.3, textTransform: "uppercase",
+              color: "var(--accent)", border: "1px solid var(--border)", borderRadius: 999,
+              padding: "3px 10px", whiteSpace: "nowrap",
+            }}
+          >
+            {getClienteSlug()}
+          </span>
+        )}
         {projectId && (
           <>
             <span style={{ fontSize: 13, color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }}>{projectName}</span>

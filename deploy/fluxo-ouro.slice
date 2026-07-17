@@ -1,0 +1,20 @@
+# Teto de recursos do fluxo-ouro-service na KVM8 (8 vCPU / 32 GB).
+# Docs: AGENTE-VIDEO-SERVICE.md secao 7.
+#
+# O TETO E DO SLICE INTEIRO, nao por worker. Este e' o ponto: com limite por processo,
+# 2 workers x ffmpeg(-threads 4) = 8 nucleos, e o painel dos 220 clientes morre. Aqui, nao
+# importa quantos ffmpeg nascam: juntos nao passam de CPUQuota.
+#
+# NUMEROS SAO HIPOTESE ate o spike V0.3 medir render real na KVM8. Metade da maquina pro
+# servico, metade pro OS respirar.
+
+[Slice]
+# 400% = 4 dos 8 vCPU, somando TODOS os processos do servico (node + ffmpeg + python).
+CPUQuota=400%
+# 12 de 32 GB. Estourar mata o processo do servico, nao o OS.
+MemoryMax=12G
+MemoryHigh=10G
+# Render e' I/O pesado: em disputa de disco, o OS tem prioridade.
+IOWeight=50
+# Trava explosao de processo (ffmpeg spawna filhos).
+TasksMax=256

@@ -1,0 +1,59 @@
+# fluxo-ouro-service — unit systemd pra KVM8 (Blue.Ocean.OS.Operacional).
+# Docs: AGENTE-VIDEO-SERVICE.md secao 7, no monorepo do OS.
+#
+# ATENCAO: a KVM8 e a maquina de PRODUCAO dos 220 clientes (8 vCPU / 32 GB / 400 GB).
+# O OS (pm2 + nginx) roda nela. Este servico NAO pode competir por CPU com o painel.
+#
+# Instalar:
+#   sudo cp deploy/fluxo-ouro.slice  /etc/systemd/system/
+#   sudo cp deploy/fluxo-ouro.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now fluxo-ouro
+#
+# Os numeros de CPU/RAM sao HIPOTESE ate o spike V0.3 medir um render real. Nao subir sem
+# medicao. Se for pra errar, errar pra baixo: o painel dos 220 clientes vale mais que a
+# velocidade do render.
+
+[Unit]
+Description=Fluxo Ouro — servico de edicao de video do Agente de Video (OS)
+After=network.target
+
+[Service]
+Type=simple
+User=fluxoouro
+Group=fluxoouro
+WorkingDirectory=/opt/fluxo-ouro/backend
+ExecStart=/usr/bin/node dist/server.js
+Restart=on-failure
+RestartSec=5
+
+# O slice e' quem carrega o teto de CPU/RAM (ver fluxo-ouro.slice).
+Slice=fluxo-ouro.slice
+
+# Prioridade abaixo do OS: em disputa, o painel ganha.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+# Envs (o arquivo NAO vai pro git; 0600, dono root).
+#   PORT, VIDEO_SERVICE_TOKEN, VIDEO_STUDIO_SESSION_SECRET, VIDEO_WORKERS,
+#   VIDEO_FILA_MAX, + as keys de IA (OPENAI/FAL/REPLICATE/GOOGLE...).
+EnvironmentFile=/etc/fluxo-ouro/env
+
+# So escuta em loopback — quem chega e' o nginx e o OS. Nunca exposto.
+Environment=HOST=127.0.0.1
+
+# Endurecimento: o servico executa ffmpeg/python, entao trata-se de superficie real.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# unicos caminhos escrevveis: dados do servico + tmp
+ReadWritePaths=/var/lib/fluxo-ouro
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -41,8 +41,37 @@ export function getStudioToken(): string | null {
  * terceiros (um fetch pra outro dominio sairia com a credencial se a gente fosse
  * ingenuo aqui). Chamado uma vez, no boot, antes de qualquer componente montar.
  */
+// Prefixo do subpath (base do Vite). Em PROD: "/agente-video/studio"; em dev: "".
+// import.meta.env.BASE_URL termina com "/" — tiro a barra final pra concatenar limpo.
+const BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
+// Os 3 prefixos que o backend do studio serve. Sob subpath, uma request absoluta a "/api"
+// bate na RAIZ do dominio do OS (404) em vez do proxy do studio — por isso reescrevo com o BASE.
+const PREFIXOS = ["/api", "/uploads", "/projects"] as const;
+
+/** Aplica o subpath a uma URL de mesma origem que aponta pra um dos prefixos do backend. */
+function comBase(url: string): string {
+  if (!BASE) return url; // dev (base "/") — nada a fazer
+  const origem = window.location.origin;
+  for (const p of PREFIXOS) {
+    // relativa "/api/..." ainda sem o prefixo
+    if (url.startsWith(p) && !url.startsWith(BASE + p)) return BASE + url;
+    // absoluta "https://host/api/..." na mesma origem
+    if (url.startsWith(origem + p) && !url.startsWith(origem + BASE + p)) {
+      return origem + BASE + url.slice(origem.length);
+    }
+  }
+  return url;
+}
+
+/**
+ * Instala o interceptor de fetch. Faz DUAS coisas, e SEMPRE roda (mesmo sem token), porque a
+ * reescrita de subpath e necessaria em PROD independente da sessao:
+ *   1. reescreve /api|/uploads|/projects pro subpath (base do Vite) — assets/API/video no iframe;
+ *   2. injeta X-Studio-Token nas chamadas de /api quando ha token (handoff do OS).
+ * Chamado uma vez, no boot, antes de qualquer componente montar.
+ */
 export function instalaInterceptorDeSessao(): void {
-  if (!token) return;
   const original = window.fetch.bind(window);
 
   window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -51,14 +80,17 @@ export function instalaInterceptorDeSessao(): void {
     else if (input instanceof URL) url = input.toString();
     else url = input.url;
 
-    // relativa (/api/...) ou absoluta na mesma origem
-    const mesmaOrigem = url.startsWith("/") || url.startsWith(window.location.origin);
-    const ehApi = url.startsWith("/api") || url.startsWith(`${window.location.origin}/api`);
-    if (!mesmaOrigem || !ehApi) return original(input, init);
+    const novaUrl = comBase(url);
+    const ehApi = novaUrl.startsWith(`${BASE}/api`) || novaUrl.startsWith(`${window.location.origin}${BASE}/api`);
+
+    // Nada a fazer: URL nao mudou e nao ha token pra injetar.
+    if (novaUrl === url && !(token && ehApi)) return original(input, init);
 
     const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
-    headers.set("X-Studio-Token", token);
-    return original(input, { ...init, headers });
+    if (token && ehApi) headers.set("X-Studio-Token", token);
+    // Se a URL mudou, uso a string reescrita (descarta o Request original, se houver — os
+    // callers do studio usam string; o corpo/metodo vem do init).
+    return original(novaUrl, { ...init, headers });
   };
 }
 

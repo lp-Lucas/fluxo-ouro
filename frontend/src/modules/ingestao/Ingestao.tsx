@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useState } from "react";
 import type { TranscriptSegment } from "../../../../shared/timeline";
 
@@ -30,7 +31,7 @@ export function Ingestao({
     const form = new FormData();
     form.append("video", file);
     try {
-      const res = await fetch("/api/transcribe", { method: "POST", body: form });
+      const res = await fetch(comBase("/api/transcribe"), { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Falha na transcrição");
       setState({ phase: "idle" });

@@ -50,7 +50,7 @@ const BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
 const PREFIXOS = ["/api", "/uploads", "/projects"] as const;
 
 /** Aplica o subpath a uma URL de mesma origem que aponta pra um dos prefixos do backend. */
-function comBase(url: string): string {
+export function comBase(url: string): string {
   if (!BASE) return url; // dev (base "/") — nada a fazer
   const origem = window.location.origin;
   for (const p of PREFIXOS) {

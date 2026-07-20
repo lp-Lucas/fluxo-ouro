@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useEffect, useRef, useState } from "react";
 import type { Music } from "../../../../shared/timeline";
 import { Card, Pill, SliderField, UploadCard } from "../../workspace/ui";
@@ -35,7 +36,7 @@ export function MusicPanel({ music, onChange }: { music: Music | undefined; onCh
     try {
       const form = new FormData();
       form.append("music", file);
-      const r = await fetch("/api/music", { method: "POST", body: form });
+      const r = await fetch(comBase("/api/music"), { method: "POST", body: form });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Falha ao subir a música");
       onChange({ file: d.url, volume: music?.volume ?? 0.15 });

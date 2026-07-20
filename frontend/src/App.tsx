@@ -22,7 +22,7 @@ import { CaptionToolbar } from "./modules/legenda/CaptionToolbar";
 import { CutTimeline } from "./modules/editor/CutTimeline";
 import { TransportBus, type TransportState } from "./workspace/transport";
 import { useHistory } from "./history/useHistory";
-import { getClienteSlug } from "./os-session";
+import { getClienteSlug, comBase } from "./os-session";
 
 /** Parte do documento coberta por undo/redo. */
 interface Doc {
@@ -113,7 +113,7 @@ export function App() {
     if (!projectId) { alert("Salve o projeto antes (a re-transcrição lê o vídeo do projeto no servidor)."); return; }
     setAnchoring(true);
     try {
-      const r = await fetch("/api/realign-captions", {
+      const r = await fetch(comBase("/api/realign-captions"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId, captions: base, maxWords: captionStyle.maxWords }),
       });
@@ -159,7 +159,7 @@ export function App() {
     const parsed = parseCube(text);
     const form = new FormData();
     form.append("lut", new Blob([text], { type: "text/plain" }), name);
-    const res = await fetch("/api/lut", { method: "POST", body: form });
+    const res = await fetch(comBase("/api/lut"), { method: "POST", body: form });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? "Falha ao subir o .cube");
     setLut(parsed); setLutName(name); setLutText(text);
@@ -200,7 +200,7 @@ export function App() {
     setBusy("Transcrevendo o vídeo… (pode demorar)");
     try {
       const form = new FormData(); form.append("video", video);
-      const r = await fetch("/api/transcribe", { method: "POST", body: form });
+      const r = await fetch(comBase("/api/transcribe"), { method: "POST", body: form });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? "Falha na transcrição");
       const url = URL.createObjectURL(video);
@@ -210,7 +210,7 @@ export function App() {
         width: dims.w, height: dims.h, transcript: data.transcript,
         cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, captions: [], copy: "",
       };
-      const pr = await fetch("/api/projects", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
+      const pr = await fetch(comBase("/api/projects"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
       const pf = await pr.json();
       if (!pr.ok) throw new Error(pf.error ?? "Falha ao criar projeto");
       setLut(null); setLutName(null); setLutText(null);
@@ -222,11 +222,24 @@ export function App() {
     if (!confirmarDescartar()) return;
     setBusy("Abrindo projeto…");
     try {
-      const r = await fetch(`/api/projects/${id}`);
+      // Cada passo nomeia a própria falha — "Failed to fetch" seco não diz se foi o
+      // JSON do projeto ou o VÍDEO (grande: o Chrome materializa o blob em DISCO, e
+      // com o disco cheio o fetch morre exatamente com esse erro genérico).
+      const r = await fetch(comBase(`/api/projects/${id}`)).catch(() => {
+        throw new Error("não consegui falar com o servidor (backend fora do ar? veja o terminal do npm run dev)");
+      });
       const pf: ProjectFile = await r.json();
       if (!r.ok) throw new Error((pf as unknown as { error: string }).error ?? "Falha ao abrir");
-      const vr = await fetch(pf.document.sourceVideo);
-      const blob = await vr.blob();
+      const vr = await fetch(pf.document.sourceVideo).catch(() => {
+        throw new Error("falha ao baixar o vídeo do projeto (conexão com o servidor caiu no meio?)");
+      });
+      if (!vr.ok) throw new Error(`vídeo do projeto respondeu HTTP ${vr.status} (asset faltando no servidor?)`);
+      const blob = await vr.blob().catch(() => {
+        throw new Error(
+          "falha ao carregar o vídeo na memória — vídeo grande + pouco ESPAÇO EM DISCO no C: " +
+          "(o navegador grava o vídeo em disco temporário). Libere alguns GB e tente de novo.",
+        );
+      });
       const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
       // LUT do projeto → parseia p/ o preview
       if (pf.document.color?.lut?.file) {
@@ -247,7 +260,7 @@ export function App() {
     if (!id || !latest.current.docExtra) return;
     setSaveState("salvando");
     try {
-      const r = await fetch(`/api/projects/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: buildDoc() }) });
+      const r = await fetch(comBase(`/api/projects/${id}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: buildDoc() }) });
       const pf = await r.json();
       if (!r.ok) throw new Error(pf.error ?? "Falha ao salvar");
       setSaveState("salvo"); setLastSavedAt(Date.now());

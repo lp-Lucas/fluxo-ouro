@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptSegment, Cut, FullscreenPopup } from "../../../../shared/timeline";
 import { DEFAULT_POPUP_TRANSITION } from "../../../../shared/timeline";
@@ -26,7 +27,7 @@ function pollJob(jobId: string, onProgress?: (p: number) => void): Promise<Recor
   return new Promise((resolve, reject) => {
     const iv = setInterval(async () => {
       try {
-        const r = await fetch(`/api/flow/progress/${jobId}`);
+        const r = await fetch(comBase(`/api/flow/progress/${jobId}`));
         const j = await r.json();
         onProgress?.(j.progress ?? 0);
         if (j.status === "done") { clearInterval(iv); resolve(j.result ?? {}); }
@@ -133,7 +134,7 @@ export function FlowPanel({
     if (!estilos.length) { setError("Anexe uma imagem de estilo primeiro."); return; }
     setAnalyzing(true); setError(null);
     try {
-      const r = await fetch("/api/flow/analyze-style", {
+      const r = await fetch(comBase("/api/flow/analyze-style"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ refs: estilos.map((e) => ({ tag: e.tag, src: e.src })) }),
       });
@@ -208,7 +209,7 @@ export function FlowPanel({
   /** Para a geração em andamento (aborta a chamada no servidor). */
   async function pararGeracao(ph: FlowPhrase) {
     const j = jobs[ph.id];
-    if (j?.jobId) { try { await fetch(`/api/flow/cancel/${j.jobId}`, { method: "POST" }); } catch { /* */ } }
+    if (j?.jobId) { try { await fetch(comBase(`/api/flow/cancel/${j.jobId}`), { method: "POST" }); } catch { /* */ } }
   }
   /** Escolhe uma imagem do chat como o design da frase. */
   const usarDesign = (ph: FlowPhrase, url: string) =>
@@ -218,7 +219,7 @@ export function FlowPanel({
     if (!projectId) { setError("Salve o projeto antes de subir o design."); return; }
     setJob(ph.id, { kind: "design", progress: 0.5 });
     try {
-      const r = await fetch("/api/flow/upload-design", {
+      const r = await fetch(comBase("/api/flow/upload-design"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ projectId, phraseId: ph.id, image: dataUrl, aspect: ph.aspect ?? "9:16" }),
       });
@@ -309,7 +310,7 @@ export function FlowPanel({
     setJob(ph.id, { kind: "motionPrompt", progress: 0 });
     try {
       const { target } = phraseTimes(ph);
-      const r = await fetch("/api/flow/motion-prompt", {
+      const r = await fetch(comBase("/api/flow/motion-prompt"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           texto: ph.text, presetId: ph.designPresetId, pedido: ph.motionUserPrompt ?? "", duracaoAlvo: target,
@@ -360,6 +361,8 @@ export function FlowPanel({
         targetDuration: target, aspect: ph.aspect ?? "9:16", minDuration: motionMin(ph),
         prevImage: prevPhraseDesign(ph), // modo contínuo: design anterior = start frame
         localText: isTextMode(ph),       // modo "texto": animação local por ffmpeg (sem IA)
+        // "Regerar": já existe um vídeo → força um take novo (ignora o cache, mesmo com a mesma imagem).
+        regenNonce: ph.fittedVideoPath ? Date.now().toString(36) : undefined,
       });
       const res = await pollJob(jobId, (p) => setJob(ph.id, { kind: "animate", progress: p }));
       patchPhrase(ph.id, { videoPath: res.videoPath as string, fittedVideoPath: res.fittedVideoPath as string, fitInfo: res.fitInfo as FlowPhrase["fitInfo"], status: "video_ready" });

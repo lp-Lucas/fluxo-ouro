@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useEffect, useState } from "react";
 import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "../../../../shared/timeline";
 import type { CaptionStyle } from "../../../../shared/captionStyle";
@@ -107,7 +108,7 @@ export function ExportPanel({
       `popups=${popups.length}, cuts=${cuts.length}, zooms=${zooms.length}, font=${style.fontFamily}`);
 
     try {
-      const res = await fetch("/api/render", { method: "POST", body: form });
+      const res = await fetch(comBase("/api/render"), { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Falha ao iniciar render");
       poll(data.jobId);
@@ -119,7 +120,7 @@ export function ExportPanel({
   function poll(jobId: string) {
     const iv = setInterval(async () => {
       try {
-        const r = await fetch(`/api/render/progress/${jobId}`);
+        const r = await fetch(comBase(`/api/render/progress/${jobId}`));
         const j = await r.json();
         if (j.status === "preparing") setState({ phase: "preparing" });
         else if (j.status === "rendering") setState({ phase: "rendering", progress: j.progress ?? 0 });

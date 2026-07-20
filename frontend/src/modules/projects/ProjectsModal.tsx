@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useEffect, useState } from "react";
 import type { ProjectMeta } from "../../../../shared/project";
 
@@ -23,21 +24,29 @@ export function ProjectsModal({
   async function recarregar() {
     setErro(null);
     try {
-      const r = await fetch("/api/projects");
-      setMetas(await r.json());
-    } catch (e) { setErro((e as Error).message); }
+      const r = await fetch(comBase("/api/projects"));
+      const data = await r.json().catch(() => null);
+      // Defesa: uma resposta que NAO seja lista (401 -> {error}, 500, HTML) nao pode virar
+      // metas — o metas.map() abaixo quebraria o app INTEIRO (tela preta). Mostra o erro.
+      if (!r.ok || !Array.isArray(data)) {
+        const msg = (data && (data as { error?: string }).error) || `servidor respondeu HTTP ${r.status}`;
+        setMetas([]);
+        throw new Error(msg);
+      }
+      setMetas(data);
+    } catch (e) { setMetas([]); setErro((e as Error).message); }
   }
   useEffect(() => { recarregar(); }, []);
 
   async function renomear(m: ProjectMeta) {
     const nome = prompt("Novo nome do projeto:", m.name);
     if (!nome?.trim()) return;
-    await fetch(`/api/projects/${m.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: nome.trim() }) });
+    await fetch(comBase(`/api/projects/${m.id}`), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: nome.trim() }) });
     recarregar();
   }
   async function excluir(m: ProjectMeta) {
     if (!confirm(`Excluir "${m.name}"? Esta ação é irreversível.`)) return;
-    await fetch(`/api/projects/${m.id}`, { method: "DELETE" });
+    await fetch(comBase(`/api/projects/${m.id}`), { method: "DELETE" });
     recarregar();
   }
 

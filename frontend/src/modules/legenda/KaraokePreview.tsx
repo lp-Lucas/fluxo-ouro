@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptSegment, Cut, Zoom, Popup, Music, Caption } from "../../../../shared/timeline";
 import { activeLine, buildCaptionLines, resolveCaptionLines, stripCutsFromTranscript } from "../../../../shared/captions";
@@ -152,7 +153,7 @@ export function KaraokePreview({
     try {
       const fd = new FormData();
       fd.append("video", videoFile);
-      const r = await fetch("/api/fix-audio", { method: "POST", body: fd });
+      const r = await fetch(comBase("/api/fix-audio"), { method: "POST", body: fd });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Falha na conversão");
       setFixAudioUrl(d.url);
@@ -230,7 +231,7 @@ export function KaraokePreview({
         const fd = new FormData();
         fd.append("video", videoFile);
         fd.append("key", `${videoFile.name}-${videoFile.size}-${videoFile.lastModified}`);
-        const r = await fetch("/api/proxy", { method: "POST", body: fd });
+        const r = await fetch(comBase("/api/proxy"), { method: "POST", body: fd });
         const d = await r.json();
         if (dead) return;
         if (r.ok && d.url) {

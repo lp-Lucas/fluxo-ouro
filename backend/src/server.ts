@@ -1404,6 +1404,23 @@ app.delete("/api/projects/:id", (req, res) => {
 // TODO: /api/design  -> providers/getImageProvider()
 // TODO: /api/motion  -> Seedance
 
+// PRODUCAO: serve o front buildado (frontend/dist) na MESMA porta da API — servico UNICO,
+// igual ao AgenteVIDEOMAKER. Sob o proxy nginx do subpath (/agente-video/studio/ -> esta
+// porta), o studio (SPA) e a API saem da mesma origem, entao o nginx precisa de UMA location
+// so. So ativa se o build existir (em dev o Vite serve o front em :5174 -> inerte aqui).
+// Registrado DEPOIS de todas as rotas: o fallback SPA so pega o que sobra, e exclui as rotas
+// do backend (/api, /uploads, /projects, /jobs, /health) pra nao devolver index.html no lugar.
+{
+  const frontDist = path.resolve("..", "frontend", "dist");
+  if (fs.existsSync(path.join(frontDist, "index.html"))) {
+    app.use(express.static(frontDist));
+    app.get(/^(?!\/(api|uploads|projects|jobs|health)(\/|$)).*/, (_req, res) =>
+      res.sendFile(path.join(frontDist, "index.html")),
+    );
+    console.log("[server] front buildado servido de frontend/dist (servico unico)");
+  }
+}
+
 const server = app.listen(PORT, () => {
   console.log(`backend ouvindo em http://localhost:${PORT}`);
 });

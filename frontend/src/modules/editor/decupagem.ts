@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import type { Cut, TranscriptSegment } from "../../../../shared/timeline";
 
 /**
@@ -40,7 +41,7 @@ export async function runDecupagemServer(
   fd.append("video", video);
   fd.append("transcript", JSON.stringify(transcript));
   fd.append("copy", copy);
-  const r = await fetch("/api/decupagem", { method: "POST", body: fd });
+  const r = await fetch(comBase("/api/decupagem"), { method: "POST", body: fd });
   const data = await r.json().catch(() => ({ error: "Resposta inválida do servidor." }));
   if (!r.ok && !data.error) throw new Error("Falha ao decupar");
   return data as DecupagemResponse;
@@ -54,7 +55,7 @@ export async function pollDecupagemAi(jobId: string, opts: { intervalMs?: number
   const interval = opts.intervalMs ?? 1500;
   const deadline = Date.now() + (opts.timeoutMs ?? 180_000);
   for (;;) {
-    const r = await fetch(`/api/decupagem/progress/${jobId}`);
+    const r = await fetch(comBase(`/api/decupagem/progress/${jobId}`));
     if (r.status === 404) return { status: "error", error: "job expirou" };
     const p = (await r.json()) as DecupProgress;
     if (p.status !== "running") return p;

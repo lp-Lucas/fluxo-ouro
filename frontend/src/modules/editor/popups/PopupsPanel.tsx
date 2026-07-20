@@ -1,3 +1,4 @@
+import { comBase } from '../../../os-session';
 import { useState } from "react";
 import type {
   Popup,
@@ -248,7 +249,7 @@ function AiElementField({ onDone }: { onDone: (dataUrl: string) => void }) {
     if (!text.trim() || busy) return;
     setBusy(true); setErr(null);
     try {
-      const r = await fetch("/api/popup-element", {
+      const r = await fetch(comBase("/api/popup-element"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ prompt: text, images: refs.map((x) => x.src) }),
       });
@@ -258,7 +259,7 @@ function AiElementField({ onDone }: { onDone: (dataUrl: string) => void }) {
       const result = await new Promise<{ imageUrl?: string }>((resolve, reject) => {
         const iv = setInterval(async () => {
           try {
-            const pr = await fetch(`/api/flow/progress/${d.jobId}`);
+            const pr = await fetch(comBase(`/api/flow/progress/${d.jobId}`));
             const j = await pr.json();
             if (j.status === "done") { clearInterval(iv); resolve(j.result ?? {}); }
             else if (j.status === "error") { clearInterval(iv); reject(new Error(j.error ?? "Erro na geração")); }
@@ -272,7 +273,7 @@ function AiElementField({ onDone }: { onDone: (dataUrl: string) => void }) {
     finally { setBusy(false); setJobId(null); }
   }
   async function parar() {
-    if (jobId) { try { await fetch(`/api/flow/cancel/${jobId}`, { method: "POST" }); } catch { /* */ } }
+    if (jobId) { try { await fetch(comBase(`/api/flow/cancel/${jobId}`), { method: "POST" }); } catch { /* */ } }
   }
 
   return (

@@ -1,3 +1,4 @@
+import { comBase } from '../../os-session';
 import { useState } from "react";
 import type { Cut, Zoom, Popup, TranscriptSegment, Seconds } from "../../../../shared/timeline";
 import { removedDuration, generateAlternatingZooms } from "./autocut";
@@ -142,7 +143,7 @@ export function Editor({
         const fd = new FormData();
         fd.append("video", videoFile);
         fd.append("transcript", JSON.stringify(cur));
-        const r = await fetch("/api/fix-caption-timing", { method: "POST", body: fd });
+        const r = await fetch(comBase("/api/fix-caption-timing"), { method: "POST", body: fd });
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "falha na checagem de sincronia");
         if (!d.refused && d.fixedWords > 0) {
@@ -163,7 +164,7 @@ export function Editor({
 
     try {
       // 3) COBERTURA (IA) — sobre a transcrição JÁ reparada/sincronizada
-      const r = await fetch("/api/caption-coverage", {
+      const r = await fetch(comBase("/api/caption-coverage"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ transcript: cur, cuts, copy, durationSec }),
       });

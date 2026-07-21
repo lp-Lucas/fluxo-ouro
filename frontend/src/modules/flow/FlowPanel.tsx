@@ -693,7 +693,7 @@ export function FlowPanel({
       {lightbox && (
         <div onClick={() => setLightbox(null)}
           style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", cursor: "zoom-out" }}>
-          <img src={lightbox} alt="" style={{ maxWidth: "92vw", maxHeight: "92vh", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }} />
+          <img src={comBase(lightbox)} alt="" style={{ maxWidth: "92vw", maxHeight: "92vh", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.6)" }} />
           <button onClick={(e) => { e.stopPropagation(); setLightbox(null); }}
             style={{ position: "fixed", top: 16, right: 20, fontSize: 22, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 8, width: 40, height: 40, cursor: "pointer" }}>×</button>
         </div>
@@ -782,7 +782,7 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
       {/* DESIGN ESCOLHIDO — card com a imagem + aprovação (libera a animação) */}
       {ph.imagePath && (
         <div style={{ marginTop: 12, background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 12, display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-          <img src={ph.imagePath} alt="" onClick={() => onZoom(ph.imagePath!)} title="clique p/ ampliar"
+          <img src={comBase(ph.imagePath)} alt="" onClick={() => onZoom(ph.imagePath!)} title="clique p/ ampliar"
             style={{ maxHeight: 230, borderRadius: 8, border: "1px solid var(--border)", display: "block", cursor: "zoom-in", flex: "0 0 auto" }} />
           <div style={{ flex: 1, minWidth: 200 }}>
             <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--faint)", marginBottom: 8 }}>Design escolhido</div>
@@ -841,7 +841,7 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
       {ph.fittedVideoPath && (
         <div style={{ marginTop: 12, background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 12 }}>
           <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--faint)", marginBottom: 8 }}>Motion final</div>
-          <video src={ph.fittedVideoPath} controls muted style={{ maxHeight: 260, borderRadius: 8, border: "1px solid var(--border)" }} />
+          <video src={comBase(ph.fittedVideoPath)} controls muted style={{ maxHeight: 260, borderRadius: 8, border: "1px solid var(--border)" }} />
           {ph.fitInfo && <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>time-fit: {ph.fitInfo.strategy} · {ph.fitInfo.rawDuration}s → {ph.fitInfo.targetDuration}s (×{ph.fitInfo.speed})</p>}
           <DurationControl ph={ph} target={times.target} busy={busy} onAjustar={onAjustarTempo} />
         </div>
@@ -1126,7 +1126,7 @@ function MotionEditor({ durationSec, cuts, moments, popups, getTimes, jobs, vide
                         style={{ position: "absolute", top: 0, bottom: 0, left: left * pps, width: Math.max(18, d * pps),
                           background: "var(--active-grad)", border: "1px solid var(--border-active)", borderRadius: 8, cursor: "grab",
                           boxShadow: "var(--shadow-active)", overflow: "hidden", opacity: busy ? 0.6 : 1 }}>
-                        {ph.fittedVideoPath && <video src={ph.fittedVideoPath} muted preload="metadata"
+                        {ph.fittedVideoPath && <video src={comBase(ph.fittedVideoPath)} muted preload="metadata"
                           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.4, pointerEvents: "none" }} />}
                         <span style={{ position: "absolute", left: 6, top: 5, fontSize: 10, color: "var(--text)", fontWeight: 600, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>{d.toFixed(1)}s</span>
                         <span style={{ position: "absolute", left: 6, bottom: 4, fontSize: 9, color: speed > 1.5 || speed < 0.7 ? "#ffb0b0" : "var(--faint)", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>×{speed.toFixed(2)}</span>
@@ -1276,7 +1276,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
                 <label title="LAYOUT: um design pronto — a composição dele é preservada"
                   style={{ width: 84, minHeight: 120, flexShrink: 0, borderRadius: 8, border: "1px dashed var(--border)", display: "grid", placeItems: "center", cursor: "pointer", overflow: "hidden", background: "var(--panel3)", position: "relative" }}>
                   {layoutSrc
-                    ? <img src={layoutSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ? <img src={comBase(layoutSrc)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     : <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.4 }}>+ LAYOUT<br />(design)</span>}
                   <input type="file" accept="image/*" style={{ display: "none" }} disabled={busy}
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) readDataUrl(f, (s) => setLayoutSrc(s)); e.target.value = ""; }} />
@@ -1289,7 +1289,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
                   title="abrir o canvas do esboço — desenhe ONDE cada coisa fica"
                   style={{ width: 84, minHeight: 120, flexShrink: 0, borderRadius: 8, border: "1px dashed var(--purple)", display: "grid", placeItems: "center", cursor: "pointer", overflow: "hidden", background: "var(--panel3)", padding: 0 }}>
                   {sketchPng
-                    ? <img src={sketchPng} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ? <img src={comBase(sketchPng)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                     : <span style={{ fontSize: 11, color: "var(--purple)", textAlign: "center", lineHeight: 1.4 }}>✏ ESBOÇO<br />(abrir canvas)</span>}
                 </button>
               )}
@@ -1297,7 +1297,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
               <label title="ESTILO: tipografia / material / luz — nunca a composição"
                 style={{ width: 84, minHeight: 120, flexShrink: 0, borderRadius: 8, border: "1px dashed var(--border)", display: "grid", placeItems: "center", cursor: "pointer", overflow: "hidden", background: "var(--panel3)", position: "relative" }}>
                 {estiloSrc
-                  ? <img src={estiloSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ? <img src={comBase(estiloSrc)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   : <span style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", lineHeight: 1.4 }}>+ ESTILO<br />(visual)</span>}
                 <input type="file" accept="image/*" style={{ display: "none" }} disabled={busy}
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) readDataUrl(f, (s) => setEstiloSrc(s)); e.target.value = ""; }} />
@@ -1317,7 +1317,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
               {elementos.map((el, i) => (
                 <span key={el.id} style={{ position: "relative", width: 44, height: 44, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}
                   title={`ELEMENTO ${i + 1} — replicado fielmente na tela; cite no prompt onde ele vai`}>
-                  <img src={el.src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <img src={comBase(el.src)} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                   <button onClick={() => setElementos((v) => v.filter((x) => x.id !== el.id))}
                     style={{ position: "absolute", top: 0, right: 0, width: 14, height: 14, lineHeight: "12px", padding: 0, fontSize: 10, border: "none", background: "var(--red)", color: "#fff", cursor: "pointer" }}>×</button>
                   <span style={{ position: "absolute", bottom: 0, left: 0, fontSize: 9, fontWeight: 700, background: "rgba(0,0,0,0.7)", color: "#fff", padding: "0 4px", borderTopRightRadius: 4 }}>{i + 1}</span>
@@ -1381,7 +1381,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
               {(m.images?.length ?? 0) > 0 && (
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
                   {m.images!.map((src, i) => (
-                    <img key={i} src={src} alt="" onClick={() => onZoom(src)} onLoad={scrollBottom}
+                    <img key={i} src={comBase(src)} alt="" onClick={() => onZoom(src)} onLoad={scrollBottom}
                       style={{ height: 46, borderRadius: 8, cursor: "zoom-in", display: "block" }} />
                   ))}
                 </div>
@@ -1393,7 +1393,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
             <div className="fo-designcard">
               {m.images?.map((src, i) => (
                 <div key={i}>
-                  <img src={src} alt="" onClick={() => onZoom(src)} onLoad={scrollBottom} title="clique p/ ampliar" style={{ maxHeight: 300 }} />
+                  <img src={comBase(src)} alt="" onClick={() => onZoom(src)} onLoad={scrollBottom} title="clique p/ ampliar" style={{ maxHeight: 300 }} />
                   <button onClick={() => onUse(ph, src)} className="fo-usebtn" data-on={ph.imagePath === src}>
                     {ph.imagePath === src ? "✓ em uso" : "usar este design"}
                   </button>
@@ -1422,7 +1422,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
                 style={{ cursor: "pointer", width: 78, border: "1px solid var(--border)", borderRadius: 12, padding: 2, background: "var(--panel2)" }}>
                 <div style={{ position: "relative", width: "100%", height: 110, borderRadius: 8, background: "var(--panel3)", display: "grid", placeItems: "center", overflow: "hidden" }}>
                   <span style={{ fontSize: 10, color: "var(--faint)" }}>{t.nome}</span>
-                  <img src={t.url} alt={t.nome} onError={(e) => { e.currentTarget.style.display = "none"; }}
+                  <img src={comBase(t.url)} alt={t.nome} onError={(e) => { e.currentTarget.style.display = "none"; }}
                     style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
                 </div>
               </div>
@@ -1433,7 +1433,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", padding: "8px 2px" }}>
             {attach.map((a) => (
               <div key={a.id} style={{ position: "relative" }} title={a.name}>
-                <img src={a.src} alt="" style={{ height: 48, borderRadius: 8, border: "1px solid var(--border)" }} />
+                <img src={comBase(a.src)} alt="" style={{ height: 48, borderRadius: 8, border: "1px solid var(--border)" }} />
                 <button onClick={() => setAttach((v) => v.filter((x) => x.id !== a.id))}
                   style={{ position: "absolute", top: -6, right: -6, width: 16, height: 16, lineHeight: "13px", padding: 0, fontSize: 11, borderRadius: "50%", border: "none", background: "var(--red)", color: "#fff", cursor: "pointer" }}>×</button>
               </div>
@@ -1592,7 +1592,7 @@ function RefUploader({ refs, onChange, onZoom, tags, defaultTag }: {
             const elNum = r.tag === "referencia" ? ++el : 0;
             return (
               <div key={r.id} style={{ position: "relative", width: 96 }} title={r.name ?? ""}>
-                <img src={r.src} alt="" onClick={() => onZoom(r.src)} title="clique p/ ampliar"
+                <img src={comBase(r.src)} alt="" onClick={() => onZoom(r.src)} title="clique p/ ampliar"
                   style={{ width: 96, height: 96, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)", cursor: "zoom-in" }} />
                 {elNum > 0 && (
                   <span style={{ position: "absolute", top: 4, left: 4, fontSize: 10, fontWeight: 700, background: "var(--accent)", color: "#1a1a1a", borderRadius: 4, padding: "1px 4px", pointerEvents: "none" }}>

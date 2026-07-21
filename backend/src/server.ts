@@ -883,7 +883,10 @@ const flowHash = (s: string) => crypto.createHash("md5").update(s).digest("hex")
 function flowAsset(projectId: string, file: string): { fsPath: string; url: string } {
   const dir = assetFsPath(projectId, "flow");
   fs.mkdirSync(dir, { recursive: true });
-  return { fsPath: path.join(dir, file), url: `http://localhost:${PORT}/projects/${projectId}/assets/flow/${file}` };
+  // url RELATIVA (nao http://localhost:PORT): dentro do iframe do OS o localhost e a maquina
+  // do usuario, entao a midia gerada nao carregava. Relativa -> o front reescreve pro subpath
+  // via comBase. (fsPath continua absoluto p/ uso server-side.)
+  return { fsPath: path.join(dir, file), url: `/projects/${projectId}/assets/flow/${file}` };
 }
 
 app.get("/api/flow/progress/:id", (req, res) => {
@@ -1300,11 +1303,11 @@ app.post("/api/flow/animate", (req, res) => {
     if (!image || !motionModelPrompt?.trim() || !(targetDuration > 0)) { res.status(400).json({ error: "Faltam image, motionModelPrompt ou targetDuration." }); return; }
     const { w, h } = aspectDims(String(aspect) as FlowAspect);
     const jobId = startFlowJob(async (job, signal) => {
-      const imgLocal = flowAsset(String(projectId), path.basename(new URL(String(image)).pathname)).fsPath;
+      const imgLocal = flowAsset(String(projectId), path.basename(new URL(String(image), "http://x").pathname)).fsPath;
       if (!fs.existsSync(imgLocal)) throw new Error("Imagem base não encontrada — gere/aprove o design antes de animar.");
       // ANIMAÇÃO CONTÍNUA (MotionIA §4.1): prevImage = design da frase ANTERIOR →
       // vira o START frame deste clipe; o END é o design desta frase. Emenda invisível.
-      const prevLocal = prevImage ? flowAsset(String(projectId), path.basename(new URL(String(prevImage)).pathname)).fsPath : null;
+      const prevLocal = prevImage ? flowAsset(String(projectId), path.basename(new URL(String(prevImage), "http://x").pathname)).fsPath : null;
       if (prevImage && (!prevLocal || !fs.existsSync(prevLocal))) throw new Error("Design anterior não encontrado — aprove o design da frase anterior primeiro.");
       const provider = getVideoProvider();
       const continua = !!prevLocal;
@@ -1366,7 +1369,7 @@ app.post("/api/flow/refit", (req, res) => {
     const { w, h } = aspectDims(String(aspect) as FlowAspect);
     const minDur = Number(minDuration) || 0;
     const jobId = startFlowJob(async (_job, signal) => {
-      const rawLocal = flowAsset(String(projectId), path.basename(new URL(String(rawVideo)).pathname)).fsPath;
+      const rawLocal = flowAsset(String(projectId), path.basename(new URL(String(rawVideo), "http://x").pathname)).fsPath;
       if (!fs.existsSync(rawLocal)) throw new Error("Vídeo bruto não encontrado — gere o vídeo antes de re-sincronizar.");
       const rev = getVideoProvider().needsReverse;
       const fitFile = `fit-${phraseId}-${flowHash(path.basename(rawLocal) + ":" + targetDuration + ":" + aspect + ":" + (rev ? "rev" : "fwd") + ":min" + minDur)}.mp4`;

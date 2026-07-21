@@ -147,7 +147,7 @@ export function ProjectsModal({
           {metas?.map((m) => (
             <article key={m.id} className="pj-card" onClick={() => !busy && onOpen(m.id)}>
               {/* preview do vídeo (frame gerado no save) */}
-              <img className="pj-bg" src={`/projects/${m.id}/thumb.jpg`} alt=""
+              <img className="pj-bg" src={comBase(`/projects/${m.id}/thumb.jpg`)} alt=""
                 onError={(e) => (e.currentTarget.style.display = "none")} />
 
               <div className="pj-blur">

@@ -574,7 +574,7 @@ export function FlowPanel({
                     title="abrir no MotionStudio"
                     style={{ cursor: "pointer", display: "inline-flex", gap: 8, alignItems: "center", background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 12, padding: "4px 12px 4px 4px", fontSize: 12 }}>
                     {ph.imagePath
-                      ? <img src={ph.imagePath} alt="" style={{ width: 22, height: 32, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
+                      ? <img src={comBase(ph.imagePath)} alt="" style={{ width: 22, height: 32, objectFit: "cover", borderRadius: 8, flex: "0 0 auto" }} />
                       : <span style={{ width: 22, height: 32, borderRadius: 8, flex: "0 0 auto", border: "1px dashed var(--border)", display: "grid", placeItems: "center", fontSize: 11, color: "var(--faint)" }}>✦</span>}
                     <StatusBadge status={ph.status} />
                     <span style={{ maxWidth: 220, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>"{ph.text}"</span>
@@ -629,7 +629,7 @@ export function FlowPanel({
                               style={{ cursor: "pointer", borderRadius: 12, padding: "8px 12px", marginBottom: 4, display: "flex", gap: 8, alignItems: "center", border: `1px solid ${active ? "var(--border-active)" : "transparent"}`, background: active ? "var(--active-grad)" : "transparent", boxShadow: active ? "var(--shadow-active)" : undefined }}>
                               {/* miniatura do design: reconhecimento visual imediato da tela */}
                               {ph.imagePath
-                                ? <img src={ph.imagePath} alt="" style={{ width: 30, height: 44, objectFit: "cover", borderRadius: 8, flex: "0 0 auto", border: "1px solid var(--border)" }} />
+                                ? <img src={comBase(ph.imagePath)} alt="" style={{ width: 30, height: 44, objectFit: "cover", borderRadius: 8, flex: "0 0 auto", border: "1px solid var(--border)" }} />
                                 : <span style={{ width: 30, height: 44, borderRadius: 8, flex: "0 0 auto", border: "1px dashed var(--border)", display: "grid", placeItems: "center", fontSize: 12, color: "var(--faint)" }}>✦</span>}
                               <div style={{ minWidth: 0 }}>
                                 <div className="fo-clamp2" style={{ fontSize: 12.5, color: active ? "var(--text)" : "var(--muted)", lineHeight: 1.4, marginBottom: 4 }}>"{ph.text}"</div>

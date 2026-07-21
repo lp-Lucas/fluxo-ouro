@@ -67,7 +67,12 @@ export function verificaStudioToken(token: string | null | undefined): StudioSes
   }
   if (typeof p?.userId !== "string" || !p.userId) return null;
   if (typeof p?.clienteId !== "string" || !p.clienteId) return null;
-  if (!Number.isFinite(p?.exp) || p.exp < Math.floor(Date.now() / 1000)) return null;
+  // FOLGA de validade: o OS emite o token com TTL curto (5min, feito p/ o load), mas o editor
+  // usa o token durante TODA a edicao (proxy, autosave, export). Sem folga, a sessao morria em
+  // 5min e a previa/timeline caiam. Estende a aceitacao aqui (a assinatura HMAC continua
+  // exigida — isto so alonga a validade, nao afrouxa a autenticidade). Ajustavel por env.
+  const graceSec = Number(process.env.VIDEO_STUDIO_TOKEN_GRACE_SEC) || 0;
+  if (!Number.isFinite(p?.exp) || p.exp + graceSec < Math.floor(Date.now() / 1000)) return null;
   return p;
 }
 

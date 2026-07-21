@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { comBase } from "../../../os-session";
 import type { SupportPopup, FullscreenPopup, PopupTransition, TypoLine } from "../../../../../shared/timeline";
 import { shadowCss, wordFx } from "../../../../../shared/captionStyle";
 
@@ -131,7 +132,7 @@ function renderPreset(p: SupportPopup, time: number): React.ReactNode {
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", color: "#111", padding: "12px 16px", borderRadius: 16 }}>
           {p.content.logoUrl
-            ? <img src={p.content.logoUrl} alt="" style={{ height: 40, width: 40, objectFit: "contain", borderRadius: 8 }} />
+            ? <img src={comBase(p.content.logoUrl)} alt="" style={{ height: 40, width: 40, objectFit: "contain", borderRadius: 8 }} />
             : <div style={{ height: 40, width: 40, borderRadius: 8, background: "#eee", display: "grid", placeItems: "center", fontSize: 11, color: "#999" }}>logo</div>}
           <span style={{ font: "700 17px/1.2 " + FONT }}>{text || "Marca"}</span>
         </div>
@@ -141,7 +142,7 @@ function renderPreset(p: SupportPopup, time: number): React.ReactNode {
       return (
         <div style={{ background: "#fff", padding: 8, borderRadius: 16, maxWidth: 260 }}>
           {p.content.imageUrl
-            ? <img src={p.content.imageUrl} alt="" style={{ display: "block", width: "100%", borderRadius: 12, maxHeight: 200, objectFit: "cover" }} />
+            ? <img src={comBase(p.content.imageUrl)} alt="" style={{ display: "block", width: "100%", borderRadius: 12, maxHeight: 200, objectFit: "cover" }} />
             : <div style={{ width: 240, height: 150, borderRadius: 12, background: "#eee", display: "grid", placeItems: "center", color: "#999", font: "13px " + FONT }}>foto</div>}
           {text && <div style={{ padding: "8px 8px 4px", color: "#111", font: "600 14px/1.3 " + FONT }}>{text}</div>}
         </div>
@@ -149,7 +150,7 @@ function renderPreset(p: SupportPopup, time: number): React.ReactNode {
 
     case "photo-plain":
       return p.content.imageUrl
-        ? <img src={p.content.imageUrl} alt="" style={{ display: "block", maxWidth: 320, maxHeight: 320, borderRadius: 8 }} />
+        ? <img src={comBase(p.content.imageUrl)} alt="" style={{ display: "block", maxWidth: 320, maxHeight: 320, borderRadius: 8 }} />
         : <div style={{ width: 240, height: 150, borderRadius: 8, background: "rgba(0,0,0,0.4)", display: "grid", placeItems: "center", color: "#fff", font: "13px " + FONT }}>foto pura</div>;
 
     case "highlight-number":
@@ -221,8 +222,8 @@ export function FullscreenPopupView({ p, time, videoSlot }: {
   let content: React.ReactNode;
   let hasMedia = true;
   if (p.media?.kind === "video" && videoSlot) content = videoSlot(p.media.src, p);
-  else if (p.media?.kind === "image") content = <img src={p.media.src} alt="" style={fill} />;
-  else if (p.placeholder?.imageUrl) content = <img src={p.placeholder.imageUrl} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />;
+  else if (p.media?.kind === "image") content = <img src={comBase(p.media.src)} alt="" style={fill} />;
+  else if (p.placeholder?.imageUrl) content = <img src={comBase(p.placeholder.imageUrl)} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />;
   else { hasMedia = false; content = p.placeholder?.label || "Tela animada (FLOW)"; }
 
   return (

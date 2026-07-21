@@ -301,7 +301,7 @@ function AiElementField({ onDone }: { onDone: (dataUrl: string) => void }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 8 }}>
           {refs.map((rf) => (
             <span key={rf.id} style={{ position: "relative", display: "inline-block" }}>
-              <img src={rf.src} alt="" style={{ height: 40, borderRadius: 8, border: "1px solid var(--field-border)", display: "block" }} />
+              <img src={comBase(rf.src)} alt="" style={{ height: 40, borderRadius: 8, border: "1px solid var(--field-border)", display: "block" }} />
               <button onClick={() => setRefs((v) => v.filter((x) => x.id !== rf.id))} disabled={busy}
                 style={{ position: "absolute", top: -6, right: -6, width: 16, height: 16, lineHeight: "13px", padding: 0, fontSize: 11, borderRadius: "50%", border: "none", background: "var(--red)", color: "#fff", cursor: "pointer" }}>×</button>
             </span>
@@ -422,7 +422,7 @@ function ImageField({ label, url, onPick, onClear }: {
     <div className="fo-field" style={{ marginBottom: 12 }}>
       <label>{label}</label>
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        {url && <img src={url} alt="" style={{ height: 40, width: 40, objectFit: "cover", borderRadius: 12, border: "1px solid var(--border)" }} />}
+        {url && <img src={comBase(url)} alt="" style={{ height: 40, width: 40, objectFit: "cover", borderRadius: 12, border: "1px solid var(--border)" }} />}
         <input type="file" accept="image/*" style={{ flex: 1, fontSize: 11 }}
           onChange={(e) => e.target.files?.[0] && readImage(e.target.files[0], onPick)} />
         {url && <button onClick={onClear} style={{ color: "var(--red)", background: "transparent", fontSize: 12 }}>remover</button>}

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { comBase } from "../../os-session";
 import {
   DEFAULT_CHROMA, isChromaActive,
   type ChromaSettings, type ChromaBackground, type RGB255,
@@ -143,7 +144,7 @@ export function ChromaPanel({
           <div style={{ marginTop: 12 }}>
             {bg.file
               ? <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <img src={bg.file} alt="" style={{ height: 54, borderRadius: 12, border: "1px solid var(--border)" }} />
+                  <img src={comBase(bg.file)} alt="" style={{ height: 54, borderRadius: 12, border: "1px solid var(--border)" }} />
                   <UploadCard compact label="Trocar imagem" accept="image/*" onPick={(f) => pickFile(f, "image")} />
                 </div>
               : <UploadCard compact label="Escolher imagem de fundo" accept="image/*" onPick={(f) => pickFile(f, "image")} />}

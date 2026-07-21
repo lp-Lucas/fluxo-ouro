@@ -235,7 +235,9 @@ export function KaraokePreview({
         const d = await r.json();
         if (dead) return;
         if (r.ok && d.url) {
-          setProxyUrl(d.url);
+          // d.url vem como /uploads/... — base-aware pro subpath do OS (senao o <video>
+          // troca pra uma URL na raiz do dominio -> 404 e o video/timeline somem).
+          setProxyUrl(comBase(d.url));
           // Original que o navegador NÃO toca (HEVC/MKV): o palco WYSIWYG nasce das
           // dimensões do ORIGINAL medidas pelo servidor (o proxy é menor — não serve).
           if (d.srcW && d.srcH) setNatural((n) => n ?? { w: d.srcW, h: d.srcH });

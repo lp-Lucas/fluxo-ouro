@@ -57,7 +57,11 @@ export function SketchCanvas({ aspect, snapshot, onUse, onClose }: {
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 950, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+    // stopPropagation: o canvas e' filho (no DOM) do painel de design, que fecha no clique de
+    // fora. Sem isto, cada clique/desenho no tldraw borbulha pro onClick de fechar do pai e o
+    // canvas some "do nada". Fechar so pelos botoes Usar/Fechar.
+    <div onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
+      style={{ position: "fixed", inset: 0, zIndex: 950, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ width: "min(1400px, 97vw)", height: "94vh", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", background: "var(--panel)", borderBottom: "1px solid var(--border)" }}>
           <strong style={{ fontSize: 14 }}>Esboço — blueprint da tela</strong>

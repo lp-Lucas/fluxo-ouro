@@ -7,7 +7,9 @@ import { OpenAIImageProvider } from "./OpenAIImageProvider.js";
  * OpenAI é o principal; Gemini é a implementação alternativa da MESMA interface.
  */
 export function getImageProvider(): ImageProvider {
-  const provider = process.env.IMAGE_PROVIDER ?? "openai";
+  // trim + lowercase: env editado no servidor costuma vir com espaco/CR (`openai\r`) ou
+  // maiuscula — sem normalizar, o switch nao casa e estoura "provider desconhecido".
+  const provider = (process.env.IMAGE_PROVIDER ?? "openai").trim().toLowerCase();
   switch (provider) {
     case "openai":
       return new OpenAIImageProvider(process.env.OPENAI_API_KEY ?? "");
@@ -15,7 +17,7 @@ export function getImageProvider(): ImageProvider {
       // Nano Banana usa a MESMA chave do Veo (GOOGLE_VIDEO_API_KEY); GEMINI_API_KEY como fallback.
       return new GeminiProvider(process.env.GOOGLE_VIDEO_API_KEY ?? process.env.GEMINI_API_KEY ?? "");
     default:
-      throw new Error(`Image provider desconhecido: ${provider}`);
+      throw new Error(`IMAGE_PROVIDER invalido: "${provider}". Use "openai" ou "gemini" no backend/.env (ou /etc/fluxo-ouro/env em PROD).`);
   }
 }
 

@@ -400,7 +400,9 @@ export class ReplicateVideoProvider implements VideoProvider {
 
 /** Seleção do provider de vídeo por env (`VIDEO_PROVIDER`, default google). */
 export function getVideoProvider(): VideoProvider {
-  const provider = process.env.VIDEO_PROVIDER ?? "google";
+  // trim + lowercase: env editado no servidor costuma vir com espaco/CR (`replicate\r`) ou
+  // maiuscula — sem normalizar, o switch nao casa e estoura "provider desconhecido".
+  const provider = (process.env.VIDEO_PROVIDER ?? "google").trim().toLowerCase();
   switch (provider) {
     case "google":
       return new GoogleVideoProvider(process.env.GOOGLE_VIDEO_API_KEY ?? process.env.GEMINI_API_KEY ?? "");
@@ -411,6 +413,6 @@ export function getVideoProvider(): VideoProvider {
     case "replicate":
       return new ReplicateVideoProvider();
     default:
-      throw new Error(`Video provider desconhecido: ${provider}`);
+      throw new Error(`VIDEO_PROVIDER invalido: "${provider}". Use "google", "replicate", "fal" ou "higgsfield" no backend/.env (ou /etc/fluxo-ouro/env em PROD).`);
   }
 }

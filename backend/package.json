@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/free-port.mjs && tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-py.mjs",
     "start": "node dist/backend/src/server.js"
   },
   "dependencies": {

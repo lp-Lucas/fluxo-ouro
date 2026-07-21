@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/free-port.mjs 3001 && tsx watch src/server.ts",
+    "dev": "node scripts/free-port.mjs && tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/backend/src/server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.1",
     "@remotion/bundler": "^4.0.0",
     "@remotion/renderer": "^4.0.0",
     "dictionary-pt-br": "^2.0.0",

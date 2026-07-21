@@ -57,6 +57,21 @@ import type { CutInterval } from "./decupagem/semantic/types.js";
  * (Seedance, Gemini) com as chaves protegidas.
  */
 const app = express();
+
+// SUBPATH DO OS: o front buildado (frontend/dist) aponta assets/API pra
+// /agente-video/studio/* (VITE_BASE de producao). Atras do nginx do OS esse prefixo e'
+// REMOVIDO antes de chegar aqui. Rodando SEM esse proxy (abrir o app direto, dev local
+// da build de prod), as requisicoes chegam COM o prefixo — e o fallback SPA devolvia o
+// index.html no lugar do .js, deixando a TELA PRETA (o React nunca montava). Removo o
+// prefixo aqui pra que static, /api, /uploads e /projects resolvam nos dois cenarios.
+const STUDIO_SUBPATH = "/agente-video/studio";
+app.use((req, _res, next) => {
+  if (req.url === STUDIO_SUBPATH || req.url.startsWith(STUDIO_SUBPATH + "/")) {
+    req.url = req.url.slice(STUDIO_SUBPATH.length) || "/";
+  }
+  next();
+});
+
 // limite alto: documentos podem chegar com imagens novas em data URL (viram assets no save)
 app.use(express.json({ limit: "60mb" }));
 
@@ -1280,7 +1295,7 @@ app.post("/api/flow/motion-prompt", async (req, res) => {
 /** Animação: gera o vídeo da frase + time-fit → assets/flow/. */
 app.post("/api/flow/animate", (req, res) => {
   try {
-    const { projectId, phraseId, image, prevImage, motionModelPrompt, targetDuration, aspect = "9:16", minDuration = 0, localText = false } = req.body ?? {};
+    const { projectId, phraseId, image, prevImage, motionModelPrompt, targetDuration, aspect = "9:16", minDuration = 0, localText = false, regenNonce } = req.body ?? {};
     if (!projectId) { res.status(400).json({ error: "projectId ausente (salve o projeto antes de gerar)." }); return; }
     if (!image || !motionModelPrompt?.trim() || !(targetDuration > 0)) { res.status(400).json({ error: "Faltam image, motionModelPrompt ou targetDuration." }); return; }
     const { w, h } = aspectDims(String(aspect) as FlowAspect);
@@ -1298,9 +1313,15 @@ app.post("/api/flow/animate", (req, res) => {
       // FLOW_AI_ENTRANCE!=true. Modelo de vídeo (Seedance) só quando NENHUM desses.
       const localEntrance = !continua && !provider.needsReverse && (localText === true || process.env.FLOW_AI_ENTRANCE !== "true");
       const engine = localEntrance ? "local" : provider.name;
-      // no contínuo, o cache depende dos DOIS designs (A e B) — troca qualquer um regenera.
-      const chainKey = continua ? ":cont:" + path.basename(prevLocal!) + ":" + path.basename(imgLocal) : "";
-      const rawFile = `raw-${phraseId}-${flowHash(engine + ":" + motionModelPrompt + chainKey)}.mp4`;
+      // Cache por (engine, IMAGEM, prompt, encadeamento). A imagem base SEMPRE entra na
+      // chave — trocar o design (mesmo prompt) regenera o motion a partir da NOVA imagem.
+      // No contínuo já entram os DOIS designs (A e B); no simples, entra a imagem desta frase.
+      const chainKey = continua
+        ? ":cont:" + path.basename(prevLocal!) + ":" + path.basename(imgLocal)
+        : ":img:" + path.basename(imgLocal);
+      // "Regerar" explícito (regenNonce) força um take novo do modelo mesmo com imagem+prompt iguais.
+      const regenKey = regenNonce ? ":r:" + String(regenNonce) : "";
+      const rawFile = `raw-${phraseId}-${flowHash(engine + ":" + motionModelPrompt + chainKey + regenKey)}.mp4`;
       const raw = flowAsset(String(projectId), rawFile);
       if (!fs.existsSync(raw.fsPath)) { // cache por (engine, imagem, prompt, encadeamento)
         job.progress = 0.1;

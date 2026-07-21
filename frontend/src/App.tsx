@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Cut, Zoom, Popup, Word, SupportPopup, FullscreenPopup, TranscriptSegment, Music, Caption } from "../../shared/timeline";
 import { DEFAULT_POPUP_TRANSITION } from "../../shared/timeline";
+import { ensureWordIds, syncCaptionsText, bootstrapCaptionWordIds } from "../../shared/captions";
 import { TranscriptEditor } from "./modules/correcao/TranscriptEditor";
 import { KaraokePreview } from "./modules/legenda/KaraokePreview";
 import { Editor } from "./modules/editor/Editor";
@@ -79,7 +80,14 @@ export function App() {
 
   const setField = <K extends keyof Doc>(key: K) => (v: Updater<Doc[K]>) =>
     setDoc((d) => ({ ...d, [key]: typeof v === "function" ? (v as (p: Doc[K]) => Doc[K])(d[key]) : v }));
-  const setTranscript = setField("transcript");
+  // Editar o roteiro reescreve o TEXTO das legendas materializadas na MESMA ação (por id,
+  // sem mexer no timing) — é o que deixa corrigir a legenda mesmo depois de "Alinhar com a
+  // fala". Sem legenda materializada, nada a sincronizar (ela já deriva do roteiro).
+  const setTranscript = (v: Updater<Doc["transcript"]>) =>
+    setDoc((d) => {
+      const nt = typeof v === "function" ? (v as (p: Doc["transcript"]) => Doc["transcript"])(d.transcript) : v;
+      return { ...d, transcript: nt, captions: d.captions.length ? syncCaptionsText(d.captions, nt) : d.captions };
+    });
   const setCuts = setField("cuts");
   const setZooms = setField("zooms");
   const setPopups = setField("popups");
@@ -189,7 +197,14 @@ export function App() {
   function loadInto(pf: ProjectFile, file: File) {
     const d = pf.document;
     setDocExtra({ sourceVideo: d.sourceVideo, durationSec: d.durationSec, width: d.width, height: d.height });
-    reset({ transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, captions: d.captions ?? [] });
+    // Garante id em cada palavra e migra legendas antigas (sem id) para o novo esquema —
+    // assim a sincronização de texto passa a valer também em projetos já legendados.
+    const tr = ensureWordIds(d.transcript);
+    // Liga cada palavra da legenda à sua da transcrição (por âncora + posição) e JÁ
+    // sincroniza o texto — projetos alinhados antes desta correção passam a refletir as
+    // edições do roteiro (o timing do alinhamento é preservado).
+    const caps = syncCaptionsText(bootstrapCaptionWordIds(d.captions ?? [], tr), tr);
+    reset({ transcript: tr, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, captions: caps });
     setVideoFile(file);
     setProjectId(pf.meta.id); setProjectName(pf.meta.name);
     setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
@@ -207,7 +222,7 @@ export function App() {
       const dims = await readVideoDims(url); URL.revokeObjectURL(url);
       const document: EditorDocument = {
         sourceVideo: data.videoFile, durationSec: data.durationSec ?? dims.dur,
-        width: dims.w, height: dims.h, transcript: data.transcript,
+        width: dims.w, height: dims.h, transcript: ensureWordIds(data.transcript),
         cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, captions: [], copy: "",
       };
       const pr = await fetch(comBase("/api/projects"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
@@ -230,7 +245,7 @@ export function App() {
       });
       const pf: ProjectFile = await r.json();
       if (!r.ok) throw new Error((pf as unknown as { error: string }).error ?? "Falha ao abrir");
-      const vr = await fetch(pf.document.sourceVideo).catch(() => {
+      const vr = await fetch(comBase(pf.document.sourceVideo)).catch(() => {
         throw new Error("falha ao baixar o vídeo do projeto (conexão com o servidor caiu no meio?)");
       });
       if (!vr.ok) throw new Error(`vídeo do projeto respondeu HTTP ${vr.status} (asset faltando no servidor?)`);
@@ -243,7 +258,7 @@ export function App() {
       const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
       // LUT do projeto → parseia p/ o preview
       if (pf.document.color?.lut?.file) {
-        try { const t = await (await fetch(pf.document.color.lut.file)).text(); setLut(parseCube(t)); setLutName("LUT do projeto"); setLutText(t); }
+        try { const t = await (await fetch(comBase(pf.document.color.lut.file))).text(); setLut(parseCube(t)); setLutName("LUT do projeto"); setLutText(t); }
         catch { setLut(null); setLutName(null); setLutText(null); }
       } else { setLut(null); setLutName(null); setLutText(null); }
       loadInto(pf, file);

@@ -24,6 +24,10 @@ export type Seconds = number;
  * Os campos extras são OPCIONAIS (o app antigo ignora; a decupagem preenche).
  */
 export interface Word {
+  /** id estável da palavra. A legenda materializada o carrega p/ sincronizar o TEXTO com
+   *  o roteiro mesmo depois de "Alinhar com a fala" — o timing manual fica, o texto segue
+   *  a correção (ver syncCaptionsText em shared/captions.ts). Atribuído por ensureWordIds. */
+  id?: string;
   text: string;
   start: Seconds;
   end: Seconds;

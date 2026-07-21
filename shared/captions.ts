@@ -158,6 +158,113 @@ export function materializeCaptions(transcript: TranscriptSegment[], maxWords = 
   return buildCaptionLines(transcript, maxWords).map((l) => ({ ...l, words: l.words.map((w) => ({ ...w })) }));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SINCRONIZAÇÃO DE TEXTO — id estável por palavra.
+//
+// A legenda materializada congela o TEMPO (do alinhamento) mas não deveria congelar o
+// TEXTO. Cada palavra ganha um id; a legenda o carrega; corrigir o roteiro reescreve o
+// texto da legenda pelo id, sem tocar no timing. É o que permite "modificar a legenda
+// mesmo depois de alinhar com a fala".
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _wordSeq = 0;
+/** id de palavra — estável, atribuído uma vez. */
+export function newWordId(): string {
+  return `w${(_wordSeq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** Garante id em toda palavra da transcrição (idempotente; devolve o MESMO array se nada mudou). */
+export function ensureWordIds(transcript: TranscriptSegment[]): TranscriptSegment[] {
+  let changed = false;
+  const out = transcript.map((seg) => {
+    let segCh = false;
+    const words = seg.words.map((w) => (w.id ? w : ((segCh = changed = true), { ...w, id: newWordId() })));
+    return segCh ? { ...seg, words } : seg;
+  });
+  return changed ? out : transcript;
+}
+
+/**
+ * Reescreve o TEXTO das legendas materializadas a partir da transcrição, casando por id —
+ * o timing (start/end das palavras e da linha) NÃO muda. Chamado quando o roteiro é
+ * editado. Palavra sem id, ou cujo id sumiu da transcrição, fica como está.
+ */
+export function syncCaptionsText(captions: Caption[], transcript: TranscriptSegment[]): Caption[] {
+  if (!captions.length) return captions;
+  const textById = new Map<string, string>();
+  for (const seg of transcript) for (const w of seg.words) if (w.id) textById.set(w.id, w.text);
+  let changed = false;
+  const out = captions.map((c) => {
+    let lineCh = false;
+    const words = c.words.map((w) => {
+      const t = w.id ? textById.get(w.id) : undefined;
+      if (t != null && t !== w.text) { lineCh = changed = true; return { ...w, text: t }; }
+      return w;
+    });
+    return lineCh ? { ...c, words } : c;
+  });
+  return changed ? out : captions;
+}
+
+/**
+ * Migração p/ projetos com legendas materializadas ANTES dos ids: casa cada palavra da
+ * legenda com uma da transcrição (mesmo texto normalizado, em ordem, janela curta) e
+ * adota o id dela — assim o sync passa a funcionar em projetos antigos. Best-effort:
+ * palavra sem par (ex.: fill do realign) fica sem id e só não sincroniza.
+ */
+export function bootstrapCaptionWordIds(captions: Caption[], transcript: TranscriptSegment[]): Caption[] {
+  if (!captions.length || captions.every((c) => c.words.every((w) => w.id))) return captions;
+
+  // Palavras achatadas na ORDEM (legenda × transcrição). Casar por TEXTO não basta: o
+  // motivo de existir é justamente a legenda cujo texto JÁ divergiu do roteiro (ex.:
+  // "Em plantação" materializado, roteiro corrigido p/ "É Implantação"). LCS por texto acha
+  // as ÂNCORAS (palavras iguais ao redor); as divergentes, sem par, são ligadas por POSIÇÃO
+  // dentro da janela entre âncoras. Assim "Em"→"É" e "plantação"→"Implantação" pegam o id
+  // certo mesmo com o texto diferente, e o sync passa a valer.
+  const A: Word[] = [];
+  captions.forEach((c) => c.words.forEach((w) => A.push(w)));
+  const B = transcript.flatMap((s) => s.words);
+  const n = A.length, m = B.length;
+  if (m === 0) return captions;
+
+  const dp: Int32Array[] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  const eq = (i: number, j: number) => {
+    const a = normToken(A[i].text);
+    return a.length > 0 && a === normToken(B[j].text);
+  };
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = eq(i, j) ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+
+  const bIdx = new Int32Array(n).fill(-1);
+  { let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (eq(i, j) && dp[i][j] === dp[i + 1][j + 1] + 1) { bIdx[i] = j; i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+    } }
+  // corridas sem par → ids sequenciais da janela entre a âncora anterior e a próxima
+  let i = 0;
+  while (i < n) {
+    if (bIdx[i] >= 0) { i++; continue; }
+    let j = i; while (j < n && bIdx[j] < 0) j++;
+    let b = (i > 0 ? bIdx[i - 1] : -1) + 1;
+    const hi = j < n ? bIdx[j] : m;
+    for (let k = i; k < j && b < hi; k++, b++) bIdx[k] = b;
+    i = j;
+  }
+
+  let fi = 0;
+  return captions.map((c) => ({
+    ...c,
+    words: c.words.map((w) => {
+      const cur = fi++;
+      if (w.id) return w;
+      const bi = bIdx[cur];
+      return bi >= 0 && bi < m && B[bi].id ? { ...w, id: B[bi].id } : w;
+    }),
+  }));
+}
+
 /**
  * Aplica os cortes ativos às linhas materializadas — mesma semântica de
  * `stripCutsFromTranscript` (remove a palavra cortada; `shiftCaption` desloca).
@@ -203,8 +310,14 @@ export function resolveCaptionLines(
   captions: Caption[] | undefined,
   maxWords = 7,
 ): CaptionLine[] {
-  if (!captions?.length) return buildCaptionLines(stripCutsFromTranscript(transcript, cuts), maxWords);
-  return stripCutsFromLines(captions, cuts);
+  // UM caminho só: derivado e materializado passam AMBOS por stripCutsFromLines. Antes, o
+  // derivado re-agrupava depois de cortar (stripCutsFromTranscript → buildCaptionLines), o
+  // que gerava linhas/ids DIFERENTES do que materializeCaptions produz. Com corte ativo, o
+  // id da linha exibida não casava com o da base materializada e a EDIÇÃO se perdia (editCap
+  // não encontrava a linha). Materializar do transcript inteiro mantém o tempo de FONTE
+  // (cortes seguem dinâmicos) e garante ids estáveis entre exibir e editar.
+  const source = captions?.length ? captions : materializeCaptions(transcript, maxWords);
+  return stripCutsFromLines(source, cuts);
 }
 
 /** Remapeia uma linha para o tempo de SAÍDA (pós-cortes). null = sumiu no corte. */

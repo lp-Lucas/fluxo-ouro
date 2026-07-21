@@ -1,8 +1,23 @@
 // Libera a porta informada antes de subir o backend (mata instância órfã).
 // Cross-platform: Windows (netstat + taskkill) e Unix (lsof + kill).
 import { execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
-const port = process.argv[2] ?? "3001";
+/**
+ * A porta REAL vem do PORT no .env (o server lê a mesma env). Antes o script recebia a
+ * porta por argumento fixo (3001) enquanto o .env dizia 3002 — ele "limpava" uma porta
+ * que ninguém usava e o órfão de verdade sobrevivia, causando o crash-loop de
+ * EADDRINUSE no tsx watch. Ordem: argumento explícito > .env > default do server.
+ */
+function portFromEnv() {
+  try {
+    const env = fs.readFileSync(path.resolve(".env"), "utf8");
+    const m = env.match(/^\s*PORT\s*=\s*(\d+)/m);
+    return m?.[1];
+  } catch { return undefined; }
+}
+const port = process.argv[2] ?? portFromEnv() ?? "3001";
 
 try {
   if (process.platform === "win32") {

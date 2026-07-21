@@ -21,6 +21,9 @@ out/
 # Dados de runtime — projetos criados no app (assets + exports, ~8 GB)
 backend/projects/
 
+# Documentos de negócio (planos, custos, playbooks) — não versionar
+*.pdf
+
 # Caches de build
 .next/
 *.tsbuildinfo

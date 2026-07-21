@@ -101,7 +101,11 @@ export function TranscriptEditor({
             const last = i === tokens.length - 1;
             const dur = Math.max((span * tok.length) / totalChars, 0.05);
             const end = last ? Math.max(start + span, t + 0.05) : t + dur;
-            const word: Word = { text: tok, start: +t.toFixed(3), end: +end.toFixed(3) };
+            // A 1ª palavra herda o id da original (a legenda sincroniza o texto por id); as
+            // demais são novas (sem id — a divisão em si não flui p/ legenda materializada).
+            const word: Word = i === 0
+              ? { ...orig, text: tok, start: +t.toFixed(3), end: +end.toFixed(3) }
+              : { text: tok, start: +t.toFixed(3), end: +end.toFixed(3) };
             t = word.end;
             return word;
           });

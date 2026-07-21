@@ -8,9 +8,27 @@ const REMOTION_ENTRY = path.resolve("../remotion/src/index.ts");
 /**
  * Empacota o projeto Remotion. Em dev, rebundlar a cada render garante que as
  * mudanças na composição sempre entram (sem cache stale). Custa alguns segundos.
+ *
+ * extensionAlias `.js` → `.ts`: os módulos de shared/ importam com extensão `.js`
+ * (exigência do Node ESM no backend compilado). O webpack do Remotion, sozinho, não
+ * mapeia `.js` de volta pra `.ts` e quebra em "Can't resolve './cutplan.js'". Este
+ * override faz o webpack tentar `.ts`/`.tsx` antes do `.js` literal.
  */
 async function getServeUrl(): Promise<string> {
-  return bundle({ entryPoint: REMOTION_ENTRY });
+  return bundle({
+    entryPoint: REMOTION_ENTRY,
+    webpackOverride: (config) => ({
+      ...config,
+      resolve: {
+        ...config.resolve,
+        extensionAlias: {
+          ...config.resolve?.extensionAlias,
+          ".js": [".ts", ".tsx", ".js"],
+          ".mjs": [".mts", ".mjs"],
+        },
+      },
+    }),
+  });
 }
 
 /**

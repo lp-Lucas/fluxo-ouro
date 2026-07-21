@@ -1,18 +1,15 @@
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { spawn } from "node:child_process";
 import { orderRefs, refRole, refHeaderLines, MOTION_SPEC_TRANSITION, TRANSITION_MOVEMENT_FALLBACK } from "./claude.js";
 import { extractJson } from "../autocut/aiCut.js";
+import { claudeVision, type ClaudeImage } from "../ai/anthropic.js";
 
 /**
  * Prompt de design por VISÃO usando o Claude (que ENXERGA as imagens). O modelo
  * OLHA as referências e escreve o prompt do gpt-image descrevendo a identidade REAL
  * (fundo claro/escuro, paleta, tipografia) — ancorando o gerador pra não reinterpretar.
  *
- * Provedor de visão: por padrão o CLI `claude -p` (com a ferramenta Read, lê os
- * arquivos de imagem) — usa a assinatura logada, sem depender da cota de chat da OpenAI.
- * Se ANTHROPIC_API_KEY existir, usa a API com imagens em base64.
+ * Provedor: API oficial da Anthropic com imagens em base64 (src/ai/anthropic.ts).
+ * (O caminho CLI `claude -p` + ferramenta Read foi aposentado junto com o de texto.)
  *
  * Prioridade das fontes: (1) instruções do usuário mandam nas CORES/conteúdo;
  * (2) "estilo" = identidade fixa; (3) "referencia" = cópia fiel; "esboco" = só layout.
@@ -20,7 +17,19 @@ import { extractJson } from "../autocut/aiCut.js";
 
 export interface VisionRef { tag: string; src: string; name?: string } // src = data URL
 
-const VISION_MODEL = process.env.ANTHROPIC_VISION_MODEL ?? "claude-sonnet-5";
+const VISION_MODEL = process.env.ANTHROPIC_VISION_MODEL ?? "claude-opus-4-8";
+
+/** data URL → bloco de imagem da API (media type + base64 puro). */
+function refToImage(r: VisionRef, label?: string): ClaudeImage {
+  const m = r.src.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
+  return { mediaType: m?.[1] ?? "image/png", dataB64: m?.[2] ?? r.src.split(",")[1] ?? "", label };
+}
+
+/** caminho de arquivo → bloco de imagem (frames de transição já vivem no disco). */
+function pathToImage(p: string, label?: string): ClaudeImage {
+  const mediaType = /\.jpe?g$/i.test(p) ? "image/jpeg" : /\.webp$/i.test(p) ? "image/webp" : "image/png";
+  return { mediaType, dataB64: fs.readFileSync(p).toString("base64"), label };
+}
 
 /** Regras (EN) de como escrever o prompt a partir das referências. */
 function rules(): string {
@@ -43,76 +52,19 @@ function header(refs: VisionRef[]): string {
     "\nWhen the scene description mentions \"elemento 1\", \"elemento 2\"… it refers to the numbered ELEMENTO images above — REPLICATE each one faithfully, placed exactly where the description says.\n\n";
 }
 
-/** Grava as refs (data URL) em arquivos temporários; devolve caminhos + limpeza. */
-function writeTemp(refs: VisionRef[]): { paths: string[]; cleanup: () => void } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "flow-vis-"));
-  const paths = refs.map((r, i) => {
-    const m = r.src.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
-    const ext = /jpe?g/.test(m?.[1] ?? "") ? "jpg" : /webp/.test(m?.[1] ?? "") ? "webp" : "png";
-    const p = path.join(dir, `img-${i}.${ext}`);
-    fs.writeFileSync(p, Buffer.from(m?.[2] ?? r.src.split(",")[1] ?? "", "base64"));
-    return p;
-  });
-  return { paths, cleanup: () => fs.rm(dir, { recursive: true, force: true }, () => {}) };
-}
-
-/** Visão via CLI `claude -p` — lê os arquivos de imagem com a ferramenta Read. */
-function claudeCliVision(prompt: string, paths: string[], signal?: AbortSignal): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const args = ["-p", "--output-format", "json", "--max-turns", String(paths.length + 4),
-      "--model", VISION_MODEL, "--allowedTools", "Read"];
-    const proc = spawn("claude", args, { shell: process.platform === "win32" });
-    const onAbort = () => { try { proc.kill(); } catch { /* */ } reject(new Error("visão cancelada")); };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    let out = "", err = "";
-    proc.stdout.on("data", (d) => (out += d));
-    proc.stderr.on("data", (d) => (err += d));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      signal?.removeEventListener("abort", onAbort);
-      if (code !== 0) { reject(new Error(`claude visão saiu com código ${code}: ${err.slice(-200)}`)); return; }
-      try { const env = JSON.parse(out); resolve(String(env.result ?? "")); }
-      catch { reject(new Error("resposta da visão ilegível")); }
-    });
-    // O prompt cita os caminhos; o Claude usa Read pra abrir cada imagem.
-    proc.stdin.write(prompt + "\n\nRead these image files first:\n" + paths.map((p, i) => `Image ${i + 1}: ${p}`).join("\n"));
-    proc.stdin.end();
-  });
-}
-
-/** Visão via API Anthropic (imagens em base64) — só se ANTHROPIC_API_KEY existir. */
-async function anthropicApiVision(prompt: string, refs: VisionRef[], signal?: AbortSignal): Promise<string> {
-  const content: unknown[] = [{ type: "text", text: prompt }];
-  refs.forEach((r, i) => {
-    const m = r.src.match(/^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i);
-    content.push({ type: "text", text: `Image ${i + 1} — role "${r.tag}":` });
-    content.push({ type: "image", source: { type: "base64", media_type: m?.[1] ?? "image/png", data: m?.[2] ?? "" } });
-  });
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY!, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: VISION_MODEL, max_tokens: 700, messages: [{ role: "user", content }] }),
-    signal,
-  });
-  if (!res.ok) throw new Error(`API Anthropic (visão) ${res.status}: ${(await res.text()).slice(-200)}`);
-  const data = await res.json();
-  return (data.content ?? []).map((b: { text?: string }) => b.text ?? "").join("");
+/** Visão pela API oficial: prompt + imagens rotuladas, na ordem. */
+function apiVision(prompt: string, refs: VisionRef[], signal?: AbortSignal): Promise<string> {
+  const images = refs.map((r, i) => refToImage(r, `Image ${i + 1} — role "${r.tag}":`));
+  return claudeVision(prompt, images, { model: VISION_MODEL, signal });
 }
 
 /**
  * PRIMITIVA DE VISÃO reutilizável: roda um prompt vendo os arquivos de imagem em `paths`.
- * Escolhe API Anthropic (se ANTHROPIC_API_KEY) ou o CLI `claude -p` com a ferramenta Read.
  * Devolve o texto cru da resposta. Usada pelo authorPrompt (o Claude-autor) e por analyzeStyle.
  */
 export async function visionFromPaths(prompt: string, paths: string[], signal?: AbortSignal): Promise<string> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    const refs: VisionRef[] = paths.map((p, i) => {
-      const mime = /\.jpe?g$/i.test(p) ? "image/jpeg" : /\.webp$/i.test(p) ? "image/webp" : "image/png";
-      return { tag: `img${i}`, src: `data:${mime};base64,${fs.readFileSync(p).toString("base64")}` };
-    });
-    return anthropicApiVision(prompt, refs, signal);
-  }
-  return claudeCliVision(prompt, paths, signal);
+  const images = paths.map((p, i) => pathToImage(p, `Image ${i + 1}:`));
+  return claudeVision(prompt, images, { model: VISION_MODEL, signal });
 }
 
 /**
@@ -134,14 +86,7 @@ export async function analyzeStyle(refs: VisionRef[], signal?: AbortSignal): Pro
     `Do NOT describe the CONTENT, the text, the objects or the layout of the image — ONLY the style.`,
     `Reply STRICT JSON: {"styleDesc":"<the compact style description, one paragraph of short sentences>"}`,
   ].join("\n");
-  let text: string;
-  if (process.env.ANTHROPIC_API_KEY) {
-    text = await anthropicApiVision(task, refs, signal);
-  } else {
-    const { paths, cleanup } = writeTemp(refs);
-    try { text = await claudeCliVision(task, paths, signal); }
-    finally { cleanup(); }
-  }
+  const text = await apiVision(task, refs, signal);
   const parsed = extractJson(text) as { styleDesc?: string };
   const desc = (parsed.styleDesc ?? "").trim() || text.trim();
   if (!desc) throw new Error("A visão não retornou a descrição do estilo.");
@@ -175,17 +120,11 @@ export async function analyzeTransitionMovement(startPath: string, endPath: stri
     `Keep it 3 to 6 short sentences, movement only. Reply STRICT JSON: {"movement":"<the movement description>"}`,
   ].join("\n");
 
-  let text: string;
-  if (process.env.ANTHROPIC_API_KEY) {
-    const toRef = (p: string, tag: string): VisionRef => {
-      const b64 = fs.readFileSync(p).toString("base64");
-      const mime = /\.jpe?g$/i.test(p) ? "image/jpeg" : /\.webp$/i.test(p) ? "image/webp" : "image/png";
-      return { tag, src: `data:${mime};base64,${b64}` };
-    };
-    text = await anthropicApiVision(task, [toRef(startPath, "FRAME A (start)"), toRef(endPath, "FRAME B (end)")], signal);
-  } else {
-    text = await claudeCliVision(task, [startPath, endPath], signal);
-  }
+  const text = await claudeVision(
+    task,
+    [pathToImage(startPath, "FRAME A (start):"), pathToImage(endPath, "FRAME B (end):")],
+    { model: VISION_MODEL, signal },
+  );
   const parsed = extractJson(text) as { movement?: string };
   return (parsed.movement ?? "").trim();
 }
@@ -211,14 +150,7 @@ export async function buildDesignPromptVision(
     `${rules()}\n\nThe new screen (${input.aspect}) headline is: "${input.texto}".` +
     (input.userPrompt ? `\nUser note (the SCENE — what appears and where): "${input.userPrompt}".` : "");
 
-  let text: string;
-  if (process.env.ANTHROPIC_API_KEY) {
-    text = await anthropicApiVision(task, refs, signal);
-  } else {
-    const { paths, cleanup } = writeTemp(refs);
-    try { text = await claudeCliVision(task, paths, signal); }
-    finally { cleanup(); }
-  }
+  const text = await apiVision(task, refs, signal);
   const parsed = extractJson(text) as { designPrompt?: string };
   const body = (parsed.designPrompt ?? "").trim() || text.trim();
   if (!body) throw new Error("A visão não retornou um prompt.");

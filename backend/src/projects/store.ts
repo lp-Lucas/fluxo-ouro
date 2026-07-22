@@ -194,10 +194,26 @@ export function createProject(name: string, doc: EditorDocument): ProjectFile {
   return { ...pf, document: hydrateAssets(id, moved) };
 }
 
-export function saveProject(id: string, doc: EditorDocument): ProjectFile {
+/** Save recusado porque o projeto ja tem uma versao mais nova (outra sessao/computador salvou). */
+export class ProjectConflictError extends Error {
+  readonly serverUpdatedAt: number;
+  constructor(serverUpdatedAt: number) {
+    super("O projeto foi alterado em outra sessão. Recarregue para pegar a versão mais recente.");
+    this.name = "ProjectConflictError";
+    this.serverUpdatedAt = serverUpdatedAt;
+  }
+}
+
+export function saveProject(id: string, doc: EditorDocument, baseUpdatedAt?: number): ProjectFile {
   const f = projJson(id);
   if (!fs.existsSync(f)) throw new ProjectError("Projeto não encontrado.");
   const antigo = JSON.parse(fs.readFileSync(f, "utf8")) as ProjectFile;
+  // TRAVA DE CONCORRENCIA (last-write-wins seguro): se quem salva carregou uma versao mais
+  // ANTIGA que a do disco, alguem salvou no meio — recusa em vez de sobrescrever (senao a
+  // geracao/edicao do outro sumia). O front trata o 409: recarrega a versao nova.
+  if (typeof baseUpdatedAt === "number" && antigo.meta.updatedAt > baseUpdatedAt) {
+    throw new ProjectConflictError(antigo.meta.updatedAt);
+  }
   const moved = dehydrateAssets(id, doc);
   pruneFlowAssets(id, moved); // remove gerações órfãs do FLOW
   const pf: ProjectFile = {

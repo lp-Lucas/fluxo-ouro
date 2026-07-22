@@ -48,7 +48,7 @@ const EMPTY_DOC: Doc = {
 interface DocExtra { sourceVideo: string; durationSec: number; width: number; height: number; }
 
 type Updater<V> = V | ((prev: V) => V);
-type SaveState = "salvo" | "salvando" | "nao_salvo" | "erro";
+type SaveState = "salvo" | "salvando" | "nao_salvo" | "erro" | "conflito";
 
 function readVideoDims(src: string): Promise<{ w: number; h: number; dur: number }> {
   return new Promise((resolve) => {
@@ -158,9 +158,9 @@ export function App() {
   }, [docExtra]);
   const effectiveColor = colorEnabled ? color : DEFAULT_COLOR;
 
-  // refs sempre atuais (para autosave ler sem closure obsoleta)
-  const latest = useRef({ doc, docExtra, projectId });
-  latest.current = { doc, docExtra, projectId };
+  // refs sempre atuais (para autosave/reload-ao-focar lerem sem closure obsoleta)
+  const latest = useRef({ doc, docExtra, projectId, lastSavedAt, saveState, videoFile });
+  latest.current = { doc, docExtra, projectId, lastSavedAt, saveState, videoFile };
 
   // ───────── LUT (igual antes) ─────────
   async function loadLutFromText(text: string, name: string, intensity: number, colorForLut: ColorSettings) {
@@ -275,10 +275,19 @@ export function App() {
     if (!id || !latest.current.docExtra) return;
     setSaveState("salvando");
     try {
-      const r = await fetch(comBase(`/api/projects/${id}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: buildDoc() }) });
+      // baseUpdatedAt = a versao do servidor que ESTA sessao carregou/salvou por ultimo.
+      // O servidor recusa (409) se ja tem uma versao mais nova — evita apagar o trabalho de outro.
+      const r = await fetch(comBase(`/api/projects/${id}`), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ document: buildDoc(), baseUpdatedAt: latest.current.lastSavedAt }) });
       const pf = await r.json();
+      if (r.status === 409) {
+        // Outra sessao/computador salvou por cima. NAO sobrescreve; trava o autosave ("conflito").
+        setSaveState("conflito");
+        alert("⚠️ Este projeto foi alterado em OUTRO computador/sessão.\n\nSuas mudanças NÃO foram salvas, para não apagar o trabalho da outra pessoa. Recarregue a página (F5) para pegar a versão mais recente — as alterações locais desta sessão serão perdidas.");
+        return;
+      }
       if (!r.ok) throw new Error(pf.error ?? "Falha ao salvar");
-      setSaveState("salvo"); setLastSavedAt(Date.now());
+      // updatedAt do SERVIDOR (nao Date.now() local): e o que o guard de concorrencia compara.
+      setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
     } catch { setSaveState("erro"); }
   }, []);
 
@@ -312,6 +321,33 @@ export function App() {
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
   }, [saveState]);
+
+  // RECARREGAR AO FOCAR: ao voltar pra aba/janela, se NAO ha pendencia local (saveState
+  // "salvo"), busca o projeto no servidor; se outra pessoa salvou uma versao mais nova, puxa.
+  // Assim a geracao/edicao feita em outro computador aparece aqui sem F5. Com pendencia local
+  // NAO mexe (o guard de concorrencia do salvar avisa no proximo save).
+  useEffect(() => {
+    const puxarSeNovo = async () => {
+      const L = latest.current;
+      if (!L.projectId || L.saveState !== "salvo") return;
+      try {
+        const r = await fetch(comBase(`/api/projects/${L.projectId}`));
+        if (!r.ok) return;
+        const pf: ProjectFile = await r.json();
+        if (pf.meta.updatedAt <= (L.lastSavedAt ?? 0)) return; // ja estou na versao atual
+        if (pf.document.sourceVideo === L.docExtra?.sourceVideo && L.videoFile) {
+          loadInto(pf, L.videoFile); // mesmo video → reusa o blob local (sem re-baixar)
+        } else {
+          abrirProjeto(pf.meta.id); // video mudou → recarrega completo
+        }
+      } catch { /* silencioso: focar nao pode quebrar a edicao */ }
+    };
+    const onVis = () => { if (document.visibilityState === "visible") puxarSeNovo(); };
+    window.addEventListener("focus", puxarSeNovo);
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.removeEventListener("focus", puxarSeNovo); document.removeEventListener("visibilitychange", onVis); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function confirmarDescartar(): boolean {
     if (saveState === "salvo" || !projectId) return true;
@@ -354,6 +390,7 @@ export function App() {
   const saveLabel: Record<SaveState, string> = {
     salvo: lastSavedAt ? `salvo às ${new Date(lastSavedAt).toLocaleTimeString("pt-BR")}` : "salvo",
     salvando: "salvando…", nao_salvo: "alterações não salvas", erro: "erro ao salvar",
+    conflito: "⚠️ mudou em outro PC — recarregue (F5)",
   };
 
   return (

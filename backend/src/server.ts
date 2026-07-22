@@ -26,7 +26,7 @@ import { getFlowPreset, aspectDims, identityToPrompt, colorLaw, type FlowAspect,
 import { mixBackgroundMusic } from "./music/mixMusic.js";
 import {
   listMetas, readProject, createProject, saveProject, renameProject, deleteProject,
-  PROJECTS_ROOT, assetFsPath,
+  PROJECTS_ROOT, assetFsPath, ProjectConflictError,
 } from "./projects/store.js";
 // Integracao com o OS (docs no monorepo: AGENTE-VIDEO-SERVICE.md).
 import { osRouter } from "./os-integration/routes.js";
@@ -1384,6 +1384,12 @@ app.post("/api/flow/refit", (req, res) => {
 // ───────────────────────── PROJETOS ─────────────────────
 // Mapeia erros de projeto para status + mensagem legível (PT-BR).
 function projErr(res: express.Response, e: unknown) {
+  // Conflito de versao (outra sessao salvou por cima): 409 + a versao atual do servidor,
+  // pro front decidir (recarregar). NAO e' erro do usuario — e' guarda anti-perda-de-trabalho.
+  if (e instanceof ProjectConflictError) {
+    res.status(409).json({ error: e.message, code: "CONFLICT", updatedAt: e.serverUpdatedAt });
+    return;
+  }
   const msg = (e as Error).message ?? "Erro no projeto";
   const notFound = e instanceof ProjectError && /não encontrado/i.test(msg);
   res.status(notFound ? 404 : 400).json({ error: msg });
@@ -1407,9 +1413,9 @@ app.get("/api/projects/:id", (req, res) => {
 
 app.put("/api/projects/:id", (req, res) => {
   try {
-    const { document } = req.body ?? {};
+    const { document, baseUpdatedAt } = req.body ?? {};
     if (!document) { res.status(400).json({ error: "Documento ausente." }); return; }
-    res.json(saveProject(req.params.id, document));
+    res.json(saveProject(req.params.id, document, baseUpdatedAt));
   } catch (e) { projErr(res, e); }
 });
 

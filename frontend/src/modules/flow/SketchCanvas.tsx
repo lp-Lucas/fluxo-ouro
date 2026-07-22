@@ -1,4 +1,5 @@
 import { useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Tldraw, type Editor, getSnapshot, loadSnapshot } from "tldraw";
 import "tldraw/tldraw.css";
 import type { FlowAspect } from "../../../../shared/flow";
@@ -18,10 +19,12 @@ const DIMS: Record<FlowAspect, { w: number; h: number }> = {
   "1:1": { w: 720, h: 720 },
 };
 
-export function SketchCanvas({ aspect, snapshot, onUse, onClose }: {
+export function SketchCanvas({ aspect, snapshot, phraseId, onUse, onClose }: {
   aspect: FlowAspect;
   /** snapshot salvo na frase (tldraw JSON) — reabre o esboço onde parou. */
   snapshot?: string;
+  /** id da frase — chave de persistência local do tldraw (não perde o desenho num remount). */
+  phraseId: string;
   /** "Usar esboço": PNG do artboard (dataURL) + snapshot p/ persistir. */
   onUse: (png: string, snapshot: string) => void;
   onClose: () => void;
@@ -56,10 +59,13 @@ export function SketchCanvas({ aspect, snapshot, onUse, onClose }: {
     onUse(png, JSON.stringify(getSnapshot(editor.store)));
   }
 
-  return (
-    // stopPropagation: o canvas e' filho (no DOM) do painel de design, que fecha no clique de
-    // fora. Sem isto, cada clique/desenho no tldraw borbulha pro onClick de fechar do pai e o
-    // canvas some "do nada". Fechar so pelos botoes Usar/Fechar.
+  // PORTAL pro document.body: o tldraw pretejava/travava "do nada" quando um ancestral com
+  // transform (ex.: .fo-card:hover { transform: scale(1.02) } no theme.css) virava o
+  // containing-block do position:fixed do canvas interno -> canvas jogado pra fora da tela.
+  // No body (sem transform) o problema some de vez. stopPropagation CONTINUA necessario: um
+  // portal borbulha eventos pela arvore REACT (nao o DOM), entao o onClick de fechar do pai
+  // ainda pegaria cada clique/desenho no tldraw. Fechar so pelos botoes Usar/Fechar.
+  return createPortal(
     <div onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
       style={{ position: "fixed", inset: 0, zIndex: 950, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
       <div style={{ width: "min(1400px, 97vw)", height: "94vh", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -75,9 +81,10 @@ export function SketchCanvas({ aspect, snapshot, onUse, onClose }: {
           <button onClick={onClose} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 12 }}>Fechar</button>
         </div>
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          <Tldraw onMount={onMount} />
+          <Tldraw onMount={onMount} persistenceKey={`flow-sketch-${phraseId}`} />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

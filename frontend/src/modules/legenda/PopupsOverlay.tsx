@@ -3,6 +3,7 @@ import type { Popup } from "../../../../shared/timeline";
 import type { CutPlan } from "../../../../shared/cutplan";
 import { SupportPopupView, FullscreenPopupView } from "../editor/popups/PopupViews";
 import { useFrameTime, type FrameClockLike } from "../../workspace/frameClock";
+import { comBase } from "../../os-session";
 
 /**
  * Renderiza os popups ativos por cima do vídeo (preview em tempo real),
@@ -70,7 +71,7 @@ function PreviewFullscreenVideo({ src, at, duration, time, playing, plan }: {
   }, [time, target, ativo]);
 
   return (
-    <video ref={ref} src={src} muted playsInline preload="auto"
+    <video ref={ref} src={comBase(src)} muted playsInline preload="auto"
       style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
   );
 }

@@ -35,10 +35,13 @@ const projJson = (id: string) => path.join(projDir(id), "project.json");
 export const assetFsPath = (id: string, file: string) => path.join(assetsDir(id), file);
 const assetUrl = (id: string, file: string) => `/projects/${id}/assets/${file}`;
 
-// FLOW: assets em assets/flow/. Em DISCO ref = "flow/<arquivo>"; ao ler vira URL
-// ABSOLUTA (o Remotion do export precisa de host; o navegador também aceita).
+// FLOW: assets em assets/flow/. Em DISCO ref = "flow/<arquivo>"; ao ler vira URL RELATIVA
+// (/projects/...), pro navegador reescrever pro subpath do OS via comBase. Antes era
+// http://localhost:PORT/... — dentro do iframe do OS, localhost e a maquina do usuario, entao
+// a imagem sumia ao REABRIR/em outro PC. O Remotion do export (server-side, precisa de host)
+// absolutiza os /projects//uploads/ ao renderizar (ver runRender). Assim os dois funcionam.
 const flowBasename = (r: string) => r.replace(/.*\//, "");
-const flowUrl = (id: string, file: string) => `http://localhost:${PORT}/projects/${id}/assets/flow/${file}`;
+const flowUrl = (id: string, file: string) => `/projects/${id}/assets/flow/${file}`;
 const isFlowRef = (r?: string) => !!r && (r.startsWith("flow/") || r.includes("/assets/flow/"));
 const dehydrateFlowRef = (r?: string) => (isFlowRef(r) && !r!.startsWith("flow/") ? `flow/${flowBasename(r!)}` : r);
 const hydrateFlowRef = (id: string, r?: string) => (r && r.startsWith("flow/") ? flowUrl(id, flowBasename(r)) : r);

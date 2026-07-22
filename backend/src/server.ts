@@ -392,7 +392,10 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
   try {
     // (b) PONTO 2 — logo após o multipart: tamanho do campo props e resumo pós-parse.
     console.log(`[EXPORT-DEBUG] (b) props recebidos: ${propsStr?.length ?? 0} bytes`);
-    const props = JSON.parse(propsStr ?? "{}");
+    // Os assets do FLOW/uploads no doc vem RELATIVOS (/projects/... , /uploads/...) — o
+    // navegador reescreve pro subpath, mas o Remotion (server-side) precisa de host absoluto
+    // pra buscar. Absolutiza AQUI, ponto unico dos dois callers (studio e job do OS).
+    const props = JSON.parse((propsStr ?? "{}").replace(/"(\/(?:projects|uploads)\/)/g, `"http://localhost:${PORT}$1`));
     // (b) grava EM DISCO o props exato parseado do multipart (antes de resolver imagens).
     fs.writeFileSync(path.join(OUT_DIR, "debug-props-received.json"), JSON.stringify(props, null, 2));
     console.log(

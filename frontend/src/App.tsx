@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Cut, Zoom, Popup, Word, SupportPopup, FullscreenPopup, TranscriptSegment, Music, Caption } from "../../shared/timeline";
 import { DEFAULT_POPUP_TRANSITION } from "../../shared/timeline";
-import { ensureWordIds, syncCaptionsText, bootstrapCaptionWordIds } from "../../shared/captions";
+import { ensureWordIds, syncCaptionsText, bootstrapCaptionWordIds, regroupByMaxWords } from "../../shared/captions";
 import { TranscriptEditor } from "./modules/correcao/TranscriptEditor";
 import { KaraokePreview } from "./modules/legenda/KaraokePreview";
 import { Editor } from "./modules/editor/Editor";
@@ -100,6 +100,18 @@ export function App() {
   const setCaptions = setField("captions");
 
   const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music, captions } = doc;
+
+  // Mudança de estilo da legenda. Se mexeu em "palavras por linha" E já há legendas
+  // materializadas, RE-AGRUPA junto (atômico) — senão o slider não valia depois de alinhar
+  // (resolveCaptionLines usa as captions como estão e ignora o maxWords). O timing por palavra
+  // é preservado; só a quebra de linhas muda.
+  const onCaptionStyleChange = (next: CaptionStyle) => {
+    if (next.maxWords !== captionStyle.maxWords && captions.length > 0) {
+      setDoc((d) => ({ ...d, captionStyle: next, captions: regroupByMaxWords(d.captions, next.maxWords) }));
+    } else {
+      setCaptionStyle(next);
+    }
+  };
   // Insere/atualiza os popups do FLOW por flowPhraseId (recolocar não duplica).
   // clearIds extras: remove também popups antigos do mesmo momento (ex.: os por-frase
   // de antes do popup unificado por momento).
@@ -481,7 +493,7 @@ export function App() {
                       Estilo das legendas
                     </summary>
                     <div style={{ maxHeight: "42vh", overflowY: "auto", paddingTop: 8 }}>
-                      <CaptionControls style={captionStyle} onChange={setCaptionStyle} />
+                      <CaptionControls style={captionStyle} onChange={onCaptionStyleChange} />
                     </div>
                   </details>
                 </div> ) },

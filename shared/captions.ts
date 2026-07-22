@@ -158,6 +158,24 @@ export function materializeCaptions(transcript: TranscriptSegment[], maxWords = 
   return buildCaptionLines(transcript, maxWords).map((l) => ({ ...l, words: l.words.map((w) => ({ ...w })) }));
 }
 
+/**
+ * Re-agrupa legendas JÁ materializadas em linhas de `maxWords` palavras, PRESERVANDO o timing
+ * por palavra (alinhamento/edições no nível da palavra sobrevivem). É o que faz o slider
+ * "Palavras por linha" valer MESMO depois de materializar/alinhar — antes, resolveCaptionLines
+ * usava as captions como estavam e ignorava o maxWords quando já havia camada materializada.
+ */
+export function regroupByMaxWords(captions: Caption[], maxWords = 7): Caption[] {
+  const n = Math.max(1, Math.floor(maxWords || 1));
+  const words = captions.flatMap((c) => c.words);
+  const out: Caption[] = [];
+  for (let i = 0; i < words.length; i += n) {
+    const chunk = words.slice(i, i + n);
+    if (chunk.length === 0) continue;
+    out.push({ id: `cap-l${i / n}`, start: chunk[0].start, end: chunk[chunk.length - 1].end, words: chunk.map((w) => ({ ...w })) });
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SINCRONIZAÇÃO DE TEXTO — id estável por palavra.
 //

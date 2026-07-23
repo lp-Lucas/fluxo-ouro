@@ -1,4 +1,4 @@
-import { comBase } from '../../os-session';
+import { comBase, getStudioToken } from '../../os-session';
 import { useEffect, useState } from "react";
 import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "../../../../shared/timeline";
 import type { CaptionStyle } from "../../../../shared/captionStyle";
@@ -126,7 +126,12 @@ export function ExportPanel({
         else if (j.status === "rendering") setState({ phase: "rendering", progress: j.progress ?? 0 });
         else if (j.status === "done") {
           clearInterval(iv);
-          setState({ phase: "done", url: `/api/render/result/${jobId}` });
+          // O download é um <a href> (não passa pelo interceptor de fetch): precisa do subpath
+          // via comBase E do token na URL (?t=), senão sob o iframe do OS dá 404/401 e o
+          // navegador mostra "vídeo não disponível". Em dev (sem BASE/sem token) fica igual.
+          const tok = getStudioToken();
+          const resultUrl = comBase(`/api/render/result/${jobId}`) + (tok ? `?t=${encodeURIComponent(tok)}` : "");
+          setState({ phase: "done", url: resultUrl });
         } else if (j.status === "error") {
           clearInterval(iv);
           setState({ phase: "error", message: j.error ?? "Erro no render" });

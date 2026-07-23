@@ -17,8 +17,12 @@ import { ColorPanel } from "./modules/color/ColorPanel";
 import { ChromaPanel } from "./modules/chroma/ChromaPanel";
 import { FlowPanel } from "./modules/flow/FlowPanel";
 import { MusicPanel } from "./modules/music/MusicPanel";
+import { AudioPanel } from "./modules/audio/AudioPanel";
+import type { AudioSettings } from "../../shared/audio";
 import { ProjectsModal } from "./modules/projects/ProjectsModal";
 import { Dock } from "./workspace/Dock";
+import { Icon } from "./workspace/icons";
+import { PopupsPanel } from "./modules/editor/popups/PopupsPanel";
 import { CaptionControls } from "./modules/legenda/CaptionControls";
 import { CaptionToolbar } from "./modules/legenda/CaptionToolbar";
 import { CutTimeline } from "./modules/editor/CutTimeline";
@@ -27,6 +31,8 @@ import { useHistory } from "./history/useHistory";
 import { getClienteSlug, comBase } from "./os-session";
 import { AssemblyEditor } from "./modules/assembly/AssemblyEditor";
 import type { Assembly } from "../../shared/assembly";
+import { mainSpans } from "../../shared/assembly";
+import { remapDoc } from "./modules/assembly/remapDoc";
 
 /** Parte do documento coberta por undo/redo. */
 interface Doc {
@@ -40,12 +46,14 @@ interface Doc {
   chroma: ChromaSettings;
   flow?: FlowState;
   music?: Music;
+  /** Tratamento do áudio da fala (isolamento + masterização). Ver shared/audio.ts. */
+  audio?: AudioSettings;
   /** Legendas com tempo manual. Vazio = derivadas da transcrição (ver shared/captions.ts). */
   captions: Caption[];
 }
 const EMPTY_DOC: Doc = {
   transcript: [], cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, copy: "",
-  color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, flow: undefined, music: undefined, captions: [],
+  color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, flow: undefined, music: undefined, audio: undefined, captions: [],
 };
 /** Metadados do vídeo/projeto que NÃO entram no undo (não mudam durante a edição). */
 interface DocExtra { sourceVideo: string; durationSec: number; width: number; height: number; }
@@ -105,9 +113,10 @@ export function App() {
   const setChroma = setField("chroma");
   const setFlow = setField("flow");
   const setMusic = setField("music");
+  const setAudio = setField("audio");
   const setCaptions = setField("captions");
 
-  const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music, captions } = doc;
+  const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music, audio, captions } = doc;
 
   // ── MOTIONS na timeline principal (grupos por momento, resize individual via re-fit do FLOW) ──
   const ajustarTempoRef = useRef<((ph: FlowPhrase, d: number | undefined) => void) | null>(null);
@@ -220,7 +229,7 @@ export function App() {
   useEffect(() => {
     const el = bandRef.current; if (!el || !docExtra?.width || !docExtra?.height) return;
     const calc = () => {
-      const EXTRAS = 118; // controles sob o vídeo + paddings
+      const EXTRAS = 186; // linha do proxy + PLAYER CUSTOM sob o vídeo + paddings (o vídeo encolhe p/ caber)
       const aspect = docExtra.width / docExtra.height;
       const h = el.clientHeight - EXTRAS;
       setPvW(Math.round(Math.min(el.clientWidth * 0.55, Math.max(260, h * aspect + 26))));
@@ -278,7 +287,7 @@ export function App() {
     // sincroniza o texto — projetos alinhados antes desta correção passam a refletir as
     // edições do roteiro (o timing do alinhamento é preservado).
     const caps = syncCaptionsText(bootstrapCaptionWordIds(d.captions ?? [], tr), tr);
-    reset({ transcript: tr, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, captions: caps });
+    reset({ transcript: tr, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, audio: d.audio, captions: caps });
     setVideoFile(file);
     setVideoUrl(url);
     setProjectId(pf.meta.id); setProjectName(pf.meta.name);
@@ -339,7 +348,7 @@ export function App() {
 
   const buildDoc = (): EditorDocument => {
     const { doc: d, docExtra: e } = latest.current;
-    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, captions: d.captions, assembly: latest.current.assembly, copy: d.copy };
+    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, audio: d.audio, captions: d.captions, assembly: latest.current.assembly, copy: d.copy };
   };
 
   const salvar = useCallback(async () => {
@@ -368,7 +377,11 @@ export function App() {
    * transcrição, RESETA o que era cronometrado no vídeo antigo (cortes/zooms/popups/legendas/
    * FLOW) e salva. Mantém copy/cor/chroma/música (não dependem do tempo do source).
    */
-  async function onAssemblyConcluir(result: { videoFile: string; durationSec: number; width: number; height: number; transcript: unknown }, asm: Assembly) {
+  async function onAssemblyConcluir(
+    result: { videoFile: string; durationSec: number; width: number; height: number; transcript?: unknown; newSegments?: TranscriptSegment[] },
+    asm: Assembly,
+    opts: { mode: "remap" | "reset"; oldAssembly: Assembly },
+  ) {
     setShowAssembly(false);
     setBusy("Aplicando o novo vídeo…");
     try {
@@ -378,7 +391,20 @@ export function App() {
       const d = latest.current.doc;
       setDocExtra({ sourceVideo: result.videoFile, durationSec: result.durationSec, width: result.width, height: result.height });
       setAssembly(asm);
-      reset({ transcript: ensureWordIds(result.transcript as TranscriptSegment[]), cuts: [], zooms: [], popups: [], captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, flow: undefined, music: d.music, captions: [] });
+      if (opts.mode === "reset") {
+        reset({ transcript: ensureWordIds(result.transcript as TranscriptSegment[]), cuts: [], zooms: [], popups: [], captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, flow: undefined, music: d.music, audio: d.audio, captions: [] });
+      } else {
+        // REALOCA: leva cortes/legendas/zooms/popups/FLOW do tempo antigo pro novo pelo
+        // mapa de material do Montador. Só o que caiu em trecho removido é descartado.
+        const r = remapDoc(
+          { transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captions: d.captions, flow: d.flow },
+          mainSpans(opts.oldAssembly), mainSpans(asm),
+          ensureWordIds(result.newSegments ?? []),
+        );
+        reset({ transcript: ensureWordIds(r.transcript), cuts: r.cuts, zooms: r.zooms, popups: r.popups, captions: r.captions, flow: r.flow, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, music: d.music, audio: d.audio });
+        const perdas = r.dropped.words + r.dropped.cuts + r.dropped.popups + r.dropped.captions + r.dropped.phrases;
+        if (perdas > 0) console.log(`[MONTADOR] realocado — descartado em trechos removidos: ${JSON.stringify(r.dropped)}`);
+      }
       setVideoFile(file);
       setLut(null); setLutName(null); setLutText(null);
       setBusy(null);
@@ -498,6 +524,11 @@ export function App() {
         .dock-body > section > h2, .preview-col > section > h2 { display: none; }
         .dock-body { color: var(--text); }
         .preview-col > section { margin-top: 0 !important; }
+        /* TELA CHEIA do preview: fita pela ALTURA na proporção do vídeo (senão o <video> width:100%
+           fica alto demais e corta). O vídeo e os overlays escalam juntos pela largura do container. */
+        [data-fs]:fullscreen { max-width: none !important; width: auto !important; height: 100vh !important;
+          aspect-ratio: var(--fs-aspect, 9 / 16); margin: auto; }
+        [data-fs]:fullscreen::backdrop { background: #000; }
       `}</style>
 
       {showProjects && <ProjectsModal onOpen={abrirProjeto} onCreate={criarProjeto} busy={busy} />}
@@ -536,13 +567,13 @@ export function App() {
           </>
         )}
         <span style={{ flex: 1 }} />
-        <button onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)" style={{ ...topBtn, opacity: canUndo ? 1 : 0.35 }}>↶</button>
-        <button onClick={redo} disabled={!canRedo} title="Refazer (Ctrl+Shift+Z)" style={{ ...topBtn, opacity: canRedo ? 1 : 0.35 }}>↷</button>
+        <button onClick={undo} disabled={!canUndo} title="Desfazer (Ctrl+Z)" style={{ ...topBtn, opacity: canUndo ? 1 : 0.35, display: "inline-flex", alignItems: "center" }}><Icon name="undo" size={15} /></button>
+        <button onClick={redo} disabled={!canRedo} title="Refazer (Ctrl+Shift+Z)" style={{ ...topBtn, opacity: canRedo ? 1 : 0.35, display: "inline-flex", alignItems: "center" }}><Icon name="redo" size={15} /></button>
         {projectId && (
           <>
-            <button onClick={salvar} style={topBtn}>Salvar</button>
-            {videoFile && <button onClick={() => setShowAssembly(true)} style={topBtn} title="Unir vídeos e b-rolls (Montador de origem)">Montador</button>}
-            <button onClick={() => { if (confirmarDescartar()) setShowProjects(true); }} style={topBtn}>Projetos</button>
+            <button onClick={salvar} style={topBtnIco}><Icon name="save" size={14} />Salvar</button>
+            {videoFile && <button onClick={() => setShowAssembly(true)} style={topBtnIco} title="Unir vídeos e b-rolls (Montador de origem)"><Icon name="assembly" size={14} />Montador</button>}
+            <button onClick={() => { if (confirmarDescartar()) setShowProjects(true); }} style={topBtnIco}><Icon name="folder" size={14} />Projetos</button>
           </>
         )}
       </div>
@@ -566,67 +597,88 @@ export function App() {
               onPickKeyColor={(rgb) => { setChroma({ ...chroma, keyColor: rgb }); setEyedropper(false); }} />
           </div>
 
-          {/* ABAS (dock horizontal) — clique abre; arraste a aba pra realocar */}
-          <div style={{ flex: 1, minWidth: 0, display: "flex" }}>
-            <Dock panels={[
-              { id: "roteiro", title: "1 · Roteiro & Correção", node: (
+          {/* COLUNA DIREITA — CONFIGS (abas) em cima + TIMELINE embaixo (layout novo) */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* CONFIGS — as abas/painéis, mesmos componentes de sempre */}
+            <div style={{ flex: "1 1 0", minWidth: 0, minHeight: 0, display: "flex" }}>
+            <Dock storageKey="fluxo-dock-v2" panels={[
+              { id: "roteiro", title: "Legenda", icon: <Icon name="script" size={15} />, node: (
                 <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
                   <div style={{ flex: 1, minHeight: 0 }}>
                     <TranscriptEditor transcript={transcript} onChange={setTranscript} copy={copy} onCopyChange={setCopy} onAddCuts={addCuts} onApplyCopyCuts={applyCopyCuts} onAddPopup={addPopup} onAddFlowMoment={addFlowMoment} />
                   </div>
-                  {/* Ferramentas de TEMPO das legendas (alinhar com a fala, ±50ms, avisos) */}
-                  <CaptionToolbar transcript={transcript} cuts={cuts} captions={captions} onCaptionsChange={setCaptions}
-                    maxWords={captionStyle.maxWords} onAnchorToSpeech={realinharLegendas} anchoring={anchoring}
-                    onRetranscribeCut={retranscreverPulandoCortes} retranscribing={retranscribing} />
-                  {/* Estilo das legendas — recolhível, pra transcrição reinar na altura */}
-                  <details style={{ flexShrink: 0, borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 8 }}>
-                    <summary style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", cursor: "pointer", userSelect: "none" }}>
-                      Estilo das legendas
-                    </summary>
-                    <div style={{ maxHeight: "42vh", overflowY: "auto", paddingTop: 8 }}>
-                      <CaptionControls style={captionStyle} onChange={onCaptionStyleChange} />
-                    </div>
-                  </details>
+                  {/* RODAPÉ DO PAINEL — um único card (espelha o card da Copy no topo):
+                      as ferramentas de TEMPO das legendas + o estilo recolhível. Antes eram
+                      duas tiras soltas no pé da tela, com identidade visual própria. */}
+                  <div style={{
+                    flexShrink: 0, marginTop: 12, padding: "10px 12px",
+                    background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16,
+                  }}>
+                    <CaptionToolbar transcript={transcript} cuts={cuts} captions={captions} onCaptionsChange={setCaptions}
+                      maxWords={captionStyle.maxWords} onAnchorToSpeech={realinharLegendas} anchoring={anchoring}
+                      onRetranscribeCut={retranscreverPulandoCortes} retranscribing={retranscribing} />
+                    {/* Estilo das legendas — recolhível, pra transcrição reinar na altura */}
+                    <details style={{ borderTop: "1px solid var(--border)", marginTop: 10, paddingTop: 8 }}>
+                      <summary style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", cursor: "pointer", userSelect: "none" }}>
+                        Estilo das legendas
+                      </summary>
+                      <div style={{ maxHeight: "42vh", overflowY: "auto", paddingTop: 8 }}>
+                        <CaptionControls style={captionStyle} onChange={onCaptionStyleChange} />
+                      </div>
+                    </details>
+                  </div>
                 </div> ) },
-              { id: "cortes", title: "2 · Cortes & Timeline", node: (
+              { id: "cortes", title: "Cortes", icon: <Icon name="cut" size={15} />, node: (
                 <Editor transcript={transcript} onTranscriptChange={setTranscript} durationSec={docExtra?.durationSec ?? 0} copy={copy}
                   cuts={cuts} onCutsChange={setCuts} zooms={zooms} onZoomsChange={setZooms} popups={popups} onPopupsChange={setPopups}
                   videoFile={videoFile} transport={transport} /> ) },
-              { id: "cor", title: "3 · Cor", startCollapsed: true, node: (
+              { id: "popups", title: "Popups", icon: <Icon name="popup" size={15} />, node: (
+                <PopupsPanel transcript={transcript} popups={popups} onChange={setPopups} /> ) },
+              { id: "cor", title: "Cor", icon: <Icon name="color" size={15} />, startCollapsed: true, node: (
                 <ColorPanel color={color} onChange={setColor} enabled={colorEnabled} onToggleEnabled={setColorEnabled}
                   onPickLut={pickLut} onClearLut={clearLut} lutName={lutName} lutError={lutError}
                   onApplyPreset={applyColorPreset} makePreset={currentColorPreset} /> ) },
-              { id: "chroma", title: "4 · Chroma", startCollapsed: true, node: (
+              { id: "chroma", title: "Chroma", icon: <Icon name="chroma" size={15} />, startCollapsed: true, node: (
                 <ChromaPanel chroma={chroma} onChange={setChroma}
                   eyedropper={eyedropper} onToggleEyedropper={setEyedropper}
                   showMask={showMask} onToggleShowMask={setShowMask} /> ) },
-              { id: "musica", title: "5 · Música", startCollapsed: true, node: (
-                <MusicPanel music={music} onChange={setMusic} /> ) },
-              { id: "flow", title: "6 · FLOW — Motion Design", startCollapsed: true, node: (
+              { id: "musica", title: "Áudio", icon: <Icon name="music" size={15} />, startCollapsed: true, node: (
+                <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+                  {/* Tratamento da FALA vem primeiro: é o que muda a percepção do vídeo.
+                      A música é o segundo momento (entra sob a voz já limpa). */}
+                  <AudioPanel audio={audio} onChange={setAudio} videoFile={videoFile} videoUrl={videoUrl}
+                    projectId={projectId ?? undefined} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} />
+                  <MusicPanel music={music} onChange={setMusic} />
+                </div> ) },
+              { id: "flow", title: "Motion", icon: <Icon name="motion" size={15} />, startCollapsed: true, node: (
                 <FlowPanel transcript={transcript} cuts={cuts} durationSec={docExtra?.durationSec ?? 0} copy={copy}
                   projectId={projectId} flow={flow} onFlowChange={setFlow} onPlacePopups={placeFlowPopups}
                   flowPopups={popups.filter((p) => p.type === "fullscreen" && (p as { flowPhraseId?: string }).flowPhraseId) as FullscreenPopup[]}
                   onPatchFlowPopup={(id, patch) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))}
                   videoFile={videoFile ?? undefined} onExposeResize={exposeResize} /> ) },
-              { id: "export", title: "7 · Exportar", startCollapsed: true, node: (
+              { id: "export", title: "Exportar", icon: <Icon name="export" size={15} />, startCollapsed: true, node: (
                 <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
-                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} captions={captions} /> ) },
+                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} audio={audio} projectId={projectId} captions={captions} /> ) },
             ]} />
-          </div>
+            </div>{/* /CONFIGS */}
+
+            {/* TIMELINE — agora DENTRO da coluna direita, abaixo do CONFIGS (não mais barra
+                de largura total). O preview à esquerda passa a ter altura cheia. Mesmo componente. */}
+            {videoFile && (
+              <div style={{ flex: "0 0 auto", maxHeight: "36%", overflow: "hidden",
+                background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: "8px 12px 10px" }}>
+                <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
+                  words={transcript.flatMap((s) => s.words)}
+                  captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
+                  motionGroups={motionGroups}
+                  onMotionMove={(id, at) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, at } : p)))}
+                  onClipResize={onClipResize} />
+              </div>
+            )}
+          </div>{/* /coluna direita */}
         </div>
       )}
 
-      {/* TIMELINE FIXA — barra inferior de largura total, sempre visível */}
-      {videoFile && (
-        <div style={{ flex: "0 0 auto", background: "var(--panel)", borderTop: "1px solid var(--border)", padding: "8px 16px 12px" }}>
-          <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
-            words={transcript.flatMap((s) => s.words)}
-            captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
-            motionGroups={motionGroups}
-            onMotionMove={(id, at) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, at } : p)))}
-            onClipResize={onClipResize} />
-        </div>
-      )}
     </main>
   );
 }
@@ -663,3 +715,4 @@ const topBtn: React.CSSProperties = {
   background: "var(--panel3)", color: "var(--text)", border: "1px solid var(--border)",
   borderRadius: 8, padding: "4px 12px", fontSize: 13, cursor: "pointer", minHeight: 32,
 };
+const topBtnIco: React.CSSProperties = { ...topBtn, display: "inline-flex", alignItems: "center", gap: 6 };

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { comBase } from "../../os-session";
-import type { Assembly, MainClip, BrollClip } from "../../../../shared/assembly";
-import { BROLL_TRACKS, clipDuration, mainClipOffsets, assemblyDuration } from "../../../../shared/assembly";
+import type { Assembly, MainClip, BrollClip, ClipTransform } from "../../../../shared/assembly";
+import { BROLL_TRACKS, clipDuration, mainClipOffsets, assemblyDuration, getTransform, DEFAULT_TRANSFORM, mainSpans, newMaterialRegions } from "../../../../shared/assembly";
+import type { TranscriptSegment } from "../../../../shared/timeline";
 
 /**
  * MONTADOR DE ORIGEM — timeline multipista (MVP): 1 pista PRINCIPAL (clipes em sequência) +
@@ -15,7 +16,15 @@ import { BROLL_TRACKS, clipDuration, mainClipOffsets, assemblyDuration } from ".
  */
 
 type PoolItem = { asset: string; fileName: string; durationSec: number; width: number; height: number };
-type FlattenResult = { videoFile: string; durationSec: number; width: number; height: number; transcript: unknown; language?: string };
+type FlattenResult = {
+  videoFile: string; durationSec: number; width: number; height: number;
+  /** modo "reset": transcrição completa do vídeo novo. */
+  transcript?: unknown; language?: string;
+  /** modo "remap": só os segmentos do material NOVO, já no tempo da timeline nova. */
+  newSegments?: TranscriptSegment[];
+};
+/** Como o projeto é tratado ao concluir: realocar (padrão) ou recomeçar do zero. */
+export type ConcludeMode = "remap" | "reset";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -37,19 +46,31 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   sourceDurationSec: number;
   /** montagem salva (reabrir) — se ausente, começa com o source na principal. */
   initial?: Assembly;
-  onConclude: (result: FlattenResult, assembly: Assembly) => void;
+  onConclude: (result: FlattenResult, assembly: Assembly, opts: { mode: ConcludeMode; oldAssembly: Assembly }) => void;
   onClose: () => void;
 }) {
   const [main, setMain] = useState<MainClip[]>(() =>
     initial?.main?.length ? initial.main
-      : [{ id: uid(), asset: sourceVideoUrl, inPoint: 0, outPoint: sourceDurationSec || 1, sourceDurationSec: sourceDurationSec || 1 }]);
+      : [{ id: uid(), asset: sourceVideoUrl, inPoint: 0, outPoint: sourceDurationSec || 1, sourceDurationSec: sourceDurationSec || 1, transform: { ...DEFAULT_TRANSFORM } }]);
   const [brolls, setBrolls] = useState<BrollClip[]>(() => initial?.brolls ?? []);
   const [pool, setPool] = useState<PoolItem[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [pxPerSec, setPxPerSec] = useState(40);
   const [playhead, setPlayhead] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const [showGuide, setShowGuide] = useState(true); // guia fixa do frame 9:16 no preview
+  const [resetTudo, setResetTudo] = useState(false); // "recomeçar do zero" (re-transcrever e limpar)
   const [, tick] = useReducer((n: number) => n + 1, 0);
+
+  /**
+   * A montagem de ONDE viemos — é ela que define o mapa "tempo antigo → tempo novo" ao
+   * concluir. Sem montagem salva, o vídeo atual É a montagem antiga (um clipe inteiro).
+   * Congelada no mount: o estado `main`/`brolls` muda enquanto o usuário edita.
+   */
+  const oldAssembly = useRef<Assembly>(
+    initial?.main?.length ? initial
+      : { version: 1, main: [{ id: "src", asset: sourceVideoUrl, inPoint: 0, outPoint: sourceDurationSec || 1, sourceDurationSec: sourceDurationSec || 1, transform: { ...DEFAULT_TRANSFORM } }], brolls: [] },
+  ).current;
 
   const fileInput = useRef<HTMLInputElement | null>(null);
   const laneRef = useRef<HTMLDivElement | null>(null);
@@ -59,6 +80,59 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   const total = useMemo(() => Math.max(assemblyDuration({ version: 1, main, brolls }), 1), [main, brolls]);
   const offsets = useMemo(() => mainClipOffsets({ version: 1, main, brolls }), [main, brolls]);
   const asm = (): Assembly => ({ version: 1, main, brolls });
+
+  // ---------- transformação (escala/opacidade/velocidade/posição) ----------
+  const spd = (c: MainClip | BrollClip) => getTransform(c).speed; // velocidade efetiva (>0)
+  const selClip = useMemo<MainClip | BrollClip | null>(
+    () => main.find((c) => c.id === sel) ?? brolls.find((c) => c.id === sel) ?? null, [sel, main, brolls]);
+  /** Atualiza o transform do clipe (principal OU b-roll) por id. */
+  const patchTransform = (id: string, patch: Partial<ClipTransform>) => {
+    setMain((m) => m.map((c) => (c.id === id ? { ...c, transform: { ...getTransform(c), ...patch } } : c)));
+    setBrolls((b) => b.map((c) => (c.id === id ? { ...c, transform: { ...getTransform(c), ...patch } } : c)));
+  };
+  const resetTransform = (id: string) => patchTransform(id, { ...DEFAULT_TRANSFORM });
+
+  // ---------- manipulação no PREVIEW (arrastar p/ mover · alças p/ escalar) ----------
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const pvDrag = useRef<null | {
+    mode: "move" | "scale"; id: string; sx: number; sy: number;
+    startX: number; startY: number; startScale: number; sw: number; sh: number; cx: number; cy: number; startDist: number;
+  }>(null);
+  const pvDown = (e: React.PointerEvent, mode: "move" | "scale") => {
+    if (!selClip) return;
+    e.stopPropagation();
+    const st = stageRef.current?.getBoundingClientRect(); if (!st) return;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    const t = getTransform(selClip);
+    const cx = st.left + st.width / 2 + t.x * st.width;   // centro do box na tela
+    const cy = st.top + st.height / 2 + t.y * st.height;
+    pvDrag.current = { mode, id: selClip.id, sx: e.clientX, sy: e.clientY, startX: t.x, startY: t.y, startScale: t.scale, sw: st.width, sh: st.height, cx, cy, startDist: Math.hypot(e.clientX - cx, e.clientY - cy) || 1 };
+  };
+  const pvMove = (e: React.PointerEvent) => {
+    const d = pvDrag.current; if (!d) return;
+    if (d.mode === "move") {
+      patchTransform(d.id, { x: d.startX + (e.clientX - d.sx) / d.sw, y: d.startY + (e.clientY - d.sy) / d.sh });
+    } else {
+      const dist = Math.hypot(e.clientX - d.cx, e.clientY - d.cy);
+      patchTransform(d.id, { scale: clamp(d.startScale * (dist / d.startDist), 0.1, 5) });
+    }
+  };
+  const pvUp = (e: React.PointerEvent) => { pvDrag.current = null; (e.target as Element).releasePointerCapture?.(e.pointerId); };
+  /** CSS transform de um clipe (bate com o overlay do flatten: translate em % do frame + scale). */
+  const cssTransform = (t: ClipTransform): React.CSSProperties => ({
+    transform: `translate(${t.x * 100}%, ${t.y * 100}%) scale(${t.scale})`, transformOrigin: "center center", opacity: t.opacity,
+  });
+  /** true se escala/posição/opacidade estão neutras (a velocidade tem badge próprio). */
+  const isDefaultXf = (c: MainClip | BrollClip) => { const t = getTransform(c); return t.scale === 1 && t.x === 0 && t.y === 0 && t.opacity === 1; };
+  /** Seleciona um clipe e leva o playhead pra dentro dele (pra aparecer no preview). `left` = px do início. */
+  const selectClip = (c: MainClip | BrollClip, left: number) => {
+    setSel(c.id);
+    const startT = x2t(left), endT = startT + clipDuration(c);
+    if (playhead < startT || playhead >= endT) {
+      setPlaying(false); videoRef.current?.pause(); brollVideoRef.current?.pause();
+      setPlayhead(clamp(startT + 0.05, 0, total));
+    }
+  };
 
   const t2x = (t: number) => t * pxPerSec;
   const x2t = (x: number) => x / pxPerSec;
@@ -84,7 +158,8 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   const mainAt = (t: number) => {
     for (let i = 0; i < main.length; i++) {
       const o = offsets[i], d = clipDuration(main[i]);
-      if (t >= o - 1e-3 && t < o + d - 1e-3) return { idx: i, clip: main[i], srcTime: main[i].inPoint + (t - o) };
+      // tempo dentro do clipe FONTE = tempo na timeline × velocidade.
+      if (t >= o - 1e-3 && t < o + d - 1e-3) return { idx: i, clip: main[i], srcTime: main[i].inPoint + (t - o) * spd(main[i]) };
     }
     if (main.length) { const i = main.length - 1; return { idx: i, clip: main[i], srcTime: main[i].outPoint }; }
     return null;
@@ -93,14 +168,15 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   const brollAt = (t: number) => {
     let f: BrollClip | null = null;
     for (const b of brolls) if (t >= b.timelineStart - 1e-3 && t < b.timelineStart + clipDuration(b) - 1e-3) f = b;
-    return f ? { clip: f, srcTime: f.inPoint + (t - f.timelineStart) } : null;
+    return f ? { clip: f, srcTime: f.inPoint + (t - f.timelineStart) * spd(f) } : null;
   };
   const syncMain = (t: number, play: boolean) => {
     const v = videoRef.current; if (!v) return;
     const m = mainAt(t); if (!m) { v.pause(); return; }
+    v.playbackRate = spd(m.clip); // velocidade do clipe no preview
     if (loadedMain.current !== m.clip.asset) {
       loadedMain.current = m.clip.asset; v.src = comBase(m.clip.asset);
-      v.onloadedmetadata = () => { v.currentTime = m.srcTime; if (play) v.play().catch(() => {}); };
+      v.onloadedmetadata = () => { v.currentTime = m.srcTime; v.playbackRate = spd(m.clip); if (play) v.play().catch(() => {}); };
     } else {
       if (Math.abs(v.currentTime - m.srcTime) > 0.3) v.currentTime = m.srcTime;
       if (play) v.play().catch(() => {}); else v.pause();
@@ -111,9 +187,10 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
     const b = brollAt(t);
     if (!b) { if (loadedBroll.current) { loadedBroll.current = ""; bv.pause(); } setBrollActive(false); return; }
     setBrollActive(true);
+    bv.playbackRate = spd(b.clip);
     if (loadedBroll.current !== b.clip.asset) {
       loadedBroll.current = b.clip.asset; bv.src = comBase(b.clip.asset);
-      bv.onloadedmetadata = () => { bv.currentTime = b.srcTime; if (playing) bv.play().catch(() => {}); };
+      bv.onloadedmetadata = () => { bv.currentTime = b.srcTime; bv.playbackRate = spd(b.clip); if (playing) bv.play().catch(() => {}); };
     } else {
       if (Math.abs(bv.currentTime - b.srcTime) > 0.3) bv.currentTime = b.srcTime;
       if (playing) bv.play().catch(() => {}); else bv.pause();
@@ -128,7 +205,8 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
       else { setPlaying(false); v.pause(); setPlayhead(total); }
       return;
     }
-    const ph = offsets[m.idx] + (v.currentTime - m.clip.inPoint);
+    // tempo na timeline = tempo fonte decorrido ÷ velocidade.
+    const ph = offsets[m.idx] + (v.currentTime - m.clip.inPoint) / spd(m.clip);
     setPlayhead(ph); syncBroll(ph);
   };
   const togglePlay = () => {
@@ -156,10 +234,10 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
     } catch (e) { alert("Erro: " + (e as Error).message); } finally { setBusy(null); }
   };
   const addToMain = (it: PoolItem) => {
-    setMain((m) => [...m, { id: uid(), asset: it.asset, inPoint: 0, outPoint: it.durationSec, sourceDurationSec: it.durationSec }]);
+    setMain((m) => [...m, { id: uid(), asset: it.asset, inPoint: 0, outPoint: it.durationSec, sourceDurationSec: it.durationSec, transform: { ...DEFAULT_TRANSFORM } }]);
   };
   const addToBroll = (it: PoolItem, trackIndex: number) => {
-    setBrolls((b) => [...b, { id: uid(), asset: it.asset, inPoint: 0, outPoint: Math.min(it.durationSec, 4), sourceDurationSec: it.durationSec, trackIndex, timelineStart: snap(playhead), muted: true }]);
+    setBrolls((b) => [...b, { id: uid(), asset: it.asset, inPoint: 0, outPoint: Math.min(it.durationSec, 4), sourceDurationSec: it.durationSec, trackIndex, timelineStart: snap(playhead), muted: true, transform: { ...DEFAULT_TRANSFORM } }]);
   };
 
   // ---------- edição de clipes ----------
@@ -168,7 +246,7 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
     // principal: divide o clipe sob o playhead
     const idx = offsets.findIndex((o, i) => playhead > o + 0.05 && playhead < o + clipDuration(main[i]) - 0.05);
     if (idx >= 0) {
-      const c = main[idx], cutSrc = c.inPoint + (playhead - offsets[idx]);
+      const c = main[idx], cutSrc = c.inPoint + (playhead - offsets[idx]) * spd(c);
       const a: MainClip = { ...c, id: uid(), outPoint: cutSrc };
       const b: MainClip = { ...c, id: uid(), inPoint: cutSrc };
       setMain((m) => [...m.slice(0, idx), a, b, ...m.slice(idx + 1)]);
@@ -177,7 +255,7 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
     // b-roll: divide o que estiver sob o playhead
     const bi = brolls.findIndex((b) => playhead > b.timelineStart + 0.05 && playhead < b.timelineStart + clipDuration(b) - 0.05);
     if (bi >= 0) {
-      const c = brolls[bi], off = playhead - c.timelineStart, cutSrc = c.inPoint + off;
+      const c = brolls[bi], off = playhead - c.timelineStart, cutSrc = c.inPoint + off * spd(c);
       const a: BrollClip = { ...c, id: uid(), outPoint: cutSrc };
       const b: BrollClip = { ...c, id: uid(), inPoint: cutSrc, timelineStart: playhead };
       setBrolls((arr) => [...arr.slice(0, bi), a, b, ...arr.slice(bi + 1)]);
@@ -216,11 +294,12 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
       });
       return;
     }
-    if (d.kind === "main-in" && d.id) setMain((m) => m.map((c) => c.id === d.id ? { ...c, inPoint: clamp(c.inPoint + dt, 0, c.outPoint - 0.1) } : c));
-    if (d.kind === "main-out" && d.id) setMain((m) => m.map((c) => c.id === d.id ? { ...c, outPoint: clamp(c.outPoint + dt, c.inPoint + 0.1, c.sourceDurationSec) } : c));
+    // aparo é em tempo FONTE; o arraste é em tempo de TIMELINE → multiplica pela velocidade.
+    if (d.kind === "main-in" && d.id) setMain((m) => m.map((c) => c.id === d.id ? { ...c, inPoint: clamp(c.inPoint + dt * spd(c), 0, c.outPoint - 0.1) } : c));
+    if (d.kind === "main-out" && d.id) setMain((m) => m.map((c) => c.id === d.id ? { ...c, outPoint: clamp(c.outPoint + dt * spd(c), c.inPoint + 0.1, c.sourceDurationSec) } : c));
     if (d.kind === "broll-move" && d.id) setBrolls((b) => b.map((c) => c.id === d.id ? { ...c, timelineStart: clamp(snap(t - (d.grab ?? 0)), 0, total) } : c));
-    if (d.kind === "broll-in" && d.id) setBrolls((b) => b.map((c) => c.id === d.id ? { ...c, inPoint: clamp(c.inPoint + dt, 0, c.outPoint - 0.1), timelineStart: clamp(c.timelineStart + dt, 0, total) } : c));
-    if (d.kind === "broll-out" && d.id) setBrolls((b) => b.map((c) => c.id === d.id ? { ...c, outPoint: clamp(c.outPoint + dt, c.inPoint + 0.1, c.sourceDurationSec) } : c));
+    if (d.kind === "broll-in" && d.id) setBrolls((b) => b.map((c) => c.id === d.id ? { ...c, inPoint: clamp(c.inPoint + dt * spd(c), 0, c.outPoint - 0.1), timelineStart: clamp(c.timelineStart + dt, 0, total) } : c));
+    if (d.kind === "broll-out" && d.id) setBrolls((b) => b.map((c) => c.id === d.id ? { ...c, outPoint: clamp(c.outPoint + dt * spd(c), c.inPoint + 0.1, c.sourceDurationSec) } : c));
     tick();
   };
   const onUp = () => { drag.current = null; };
@@ -246,16 +325,39 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   // ---------- concluir ----------
   const concluir = async () => {
     if (!main.length) { alert("A pista principal precisa de ao menos um clipe."); return; }
-    if (!confirm("Concluir vai REFAZER o vídeo de origem (unir tudo) e RE-TRANSCREVER.\n\nOs cortes, legendas e FLOW atuais do projeto serão RESETADOS (estão cronometrados no vídeo antigo).\n\nContinuar?")) return;
-    setBusy("Unindo e re-transcrevendo… (pode demorar)");
+    const novo = asm();
+    const oldSpans = mainSpans(oldAssembly), newSpans = mainSpans(novo);
+    const regioes = newMaterialRegions(oldSpans, newSpans);
+    const mode: "remap" | "reset" = resetTudo ? "reset" : "remap";
+
+    if (mode === "reset") {
+      if (!confirm("RECOMEÇAR DO ZERO: vai refazer o vídeo de origem e RE-TRANSCREVER tudo.\n\nOs cortes, legendas e FLOW atuais serão APAGADOS.\n\nContinuar?")) return;
+    } else {
+      const novoSeg = regioes.reduce((a, r) => a + (r.end - r.start), 0);
+      const msg = [
+        "Concluir vai refazer o vídeo de origem e REALOCAR o projeto.",
+        "",
+        "Cortes, legendas, zooms, popups e FLOW são reposicionados no tempo novo — nada é resetado.",
+        novoSeg > 0.15
+          ? `Material novo (${novoSeg.toFixed(1)}s) será transcrito e encaixado.`
+          : "Nenhum material novo — nada precisa ser transcrito.",
+        "Só o que estava em trechos REMOVIDOS é descartado.",
+        "",
+        "Continuar?",
+      ].join("\n");
+      if (!confirm(msg)) return;
+    }
+
+    setBusy(mode === "reset" ? "Unindo e re-transcrevendo tudo… (pode demorar)"
+      : regioes.length ? "Unindo e transcrevendo o material novo…" : "Unindo o vídeo…");
     try {
       const r = await fetch(comBase("/api/assembly/flatten"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, width, height, assembly: asm() }),
+        body: JSON.stringify({ projectId, width, height, assembly: novo, mode, newRegions: regioes }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Falha ao unir");
-      onConclude(d as FlattenResult, asm());
+      onConclude(d as FlattenResult, novo, { mode, oldAssembly });
     } catch (e) { setBusy(null); alert("Erro ao concluir: " + (e as Error).message); }
   };
 
@@ -267,16 +369,20 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
       cursor: "ew-resize", background: on ? "var(--accent)" : "rgba(255,255,255,.28)", zIndex: 2,
     });
     return (
-      <div key={c.id} title={c.asset.replace(/.*\//, "")} onPointerDown={(e) => { setSel(c.id); startDrag(e, { kind: `${kindPrefix}-move` as never, id: c.id, grab: kindPrefix === "broll" ? x2t(Math.max(0, laneX(e))) - (c as BrollClip).timelineStart : 0 }); }}
+      <div key={c.id} title={c.asset.replace(/.*\//, "")} onPointerDown={(e) => { selectClip(c, left); startDrag(e, { kind: `${kindPrefix}-move` as never, id: c.id, grab: kindPrefix === "broll" ? x2t(Math.max(0, laneX(e))) - (c as BrollClip).timelineStart : 0 }); }}
         style={{ position: "absolute", left, top: 5, height: TRACK_H - 10, width: Math.max(10, w), borderRadius: 7, cursor: "grab", overflow: "hidden",
           background: kindPrefix === "main" ? "linear-gradient(180deg,#42557d,#313f5c)" : "linear-gradient(180deg,#6a4585,#4c3568)",
           border: on ? "2px solid var(--accent)" : "1px solid rgba(255,255,255,.16)", boxShadow: on ? "0 4px 14px rgba(0,0,0,.4)" : "0 1px 3px rgba(0,0,0,.3)" }}>
-        <div onPointerDown={(e) => { e.stopPropagation(); setSel(c.id); startDrag(e, { kind: `${kindPrefix}-in` as never, id: c.id }); }} style={handle("in")} />
-        <div onPointerDown={(e) => { e.stopPropagation(); setSel(c.id); startDrag(e, { kind: `${kindPrefix}-out` as never, id: c.id }); }} style={handle("out")} />
+        <div onPointerDown={(e) => { e.stopPropagation(); selectClip(c, left); startDrag(e, { kind: `${kindPrefix}-in` as never, id: c.id }); }} style={handle("in")} />
+        <div onPointerDown={(e) => { e.stopPropagation(); selectClip(c, left); startDrag(e, { kind: `${kindPrefix}-out` as never, id: c.id }); }} style={handle("out")} />
         {!narrow && (
           <div style={{ padding: "6px 12px", fontSize: 11, color: "#fff", pointerEvents: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             <div style={{ fontWeight: 600, textOverflow: "ellipsis", overflow: "hidden" }}>{c.asset.replace(/.*\//, "")}</div>
-            <div style={{ opacity: .65, fontVariantNumeric: "tabular-nums" }}>{fmt(clipDuration(c))}</div>
+            <div style={{ opacity: .65, fontVariantNumeric: "tabular-nums", display: "flex", gap: 6 }}>
+              <span>{fmt(clipDuration(c))}</span>
+              {spd(c) !== 1 && <span title="velocidade">· {spd(c).toFixed(2).replace(/\.?0+$/, "")}×</span>}
+              {!isDefaultXf(c) && <span title="transformação aplicada">· ◲</span>}
+            </div>
           </div>
         )}
       </div>
@@ -285,6 +391,21 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
 
   const laneWidth = t2x(Math.max(total, sourceDurationSec)) + 200;
   const btn = (extra?: React.CSSProperties): React.CSSProperties => ({ background: "var(--panel3)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px", fontSize: 12.5, cursor: "pointer", ...extra });
+
+  // transforms ATIVOS no playhead (aplicados no preview) + box do clipe selecionado (se visível).
+  const am = mainAt(playhead), ab = brollAt(playhead);
+  const mainXf = am ? getTransform(am.clip) : DEFAULT_TRANSFORM;
+  const brollXf = ab ? getTransform(ab.clip) : DEFAULT_TRANSFORM;
+  const boxXf = selClip && ab && ab.clip.id === selClip.id ? getTransform(ab.clip)
+    : selClip && am && am.clip.id === selClip.id ? getTransform(am.clip) : null;
+
+  // GUIA 9:16 — retângulo do frame de reels encaixado (contain) e centralizado no stage.
+  // Se o projeto já é 9:16, o retângulo cobre o stage inteiro (a guia vira o próprio contorno).
+  const stageAR = (width > 0 ? width : 9) / (height > 0 ? height : 16);
+  const targetAR = 9 / 16;
+  const guideW = stageAR > targetAR ? (targetAR / stageAR) * 100 : 100;
+  const guideH = stageAR > targetAR ? 100 : (stageAR / targetAR) * 100;
+  const guideL = (100 - guideW) / 2, guideT = (100 - guideH) / 2;
 
   return createPortal(
     <div onClick={(e) => e.stopPropagation()} onPointerDown={(e) => e.stopPropagation()}
@@ -296,6 +417,11 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
           <span style={{ fontSize: 12, color: "var(--muted)" }}>una filmagens na principal · brolls por cima · S divide · Del apaga</span>
           <span style={{ flex: 1 }} />
           {busy && <span style={{ fontSize: 12, color: "var(--accent)" }}>{busy}</span>}
+          <label title="Por padrão o projeto é REALOCADO (cortes, legendas e FLUXO são reposicionados no tempo novo). Marque para APAGAR tudo e re-transcrever do zero."
+            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: resetTudo ? "var(--red)" : "var(--muted)", cursor: "pointer", whiteSpace: "nowrap" }}>
+            <input type="checkbox" checked={resetTudo} onChange={(e) => setResetTudo(e.target.checked)} />
+            recomeçar do zero
+          </label>
           <button onClick={concluir} disabled={!!busy} style={{ background: "var(--accent)", color: "#141414", fontWeight: 600, fontSize: 13, padding: "8px 20px", borderRadius: 12, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? .5 : 1 }}>Concluir</button>
           <button onClick={onClose} disabled={!!busy} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 12 }}>Fechar</button>
         </div>
@@ -381,16 +507,78 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
             </div>
           </div>
 
-          {/* PREVIEW — painel vertical à direita, no formato do projeto (igual o studio) */}
-          <div style={{ flex: "0 0 auto", width: "clamp(360px, 38vw, 620px)", borderLeft: "1px solid var(--border)", background: "#0a0a0a", display: "grid", placeItems: "center", padding: 16, overflow: "hidden" }}>
-            <div style={{ position: "relative", height: "100%", aspectRatio: `${width > 0 ? width : 9} / ${height > 0 ? height : 16}`, maxWidth: "100%", background: "#000", borderRadius: 10, overflow: "hidden", boxShadow: "0 10px 34px rgba(0,0,0,.5)" }}>
-              {/* principal: contido no frame do projeto (letterbox), igual ao que o Concluir gera */}
-              <video ref={videoRef} onTimeUpdate={onMainTime} onEnded={onMainTime} playsInline style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", background: "#000" }} />
-              {/* overlay do b-roll: cobre o frame (como no flatten), mudo */}
-              <video ref={brollVideoRef} muted playsInline style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", display: brollActive ? "block" : "none" }} />
-              {brollActive && <span style={{ position: "absolute", right: 8, top: 8, fontSize: 10, fontWeight: 700, letterSpacing: .5, color: "#fff", background: "rgba(154,90,200,.9)", padding: "2px 8px", borderRadius: 999, zIndex: 2 }}>B-ROLL</span>}
-              <button onClick={togglePlay} title="Tocar/Pausar (espaço)" style={{ position: "absolute", left: 10, bottom: 10, width: 40, height: 40, borderRadius: 999, border: "none", background: "rgba(0,0,0,.6)", color: "#fff", fontSize: 15, cursor: "pointer", zIndex: 2 }}>{playing ? "❚❚" : "▶"}</button>
+          {/* PREVIEW + PROPRIEDADES — painel vertical à direita, no formato do projeto */}
+          <div style={{ flex: "0 0 auto", width: "clamp(380px, 40vw, 640px)", borderLeft: "1px solid var(--border)", background: "#0a0a0a", display: "flex", flexDirection: "column", minHeight: 0 }}>
+            <div style={{ flex: 1, minHeight: 0, display: "grid", placeItems: "center", padding: 16, overflow: "hidden" }}>
+              <div ref={stageRef} style={{ position: "relative", height: "100%", aspectRatio: `${width > 0 ? width : 9} / ${height > 0 ? height : 16}`, maxWidth: "100%", background: "#000", borderRadius: 10, overflow: "hidden", boxShadow: "0 10px 34px rgba(0,0,0,.5)" }}>
+                {/* principal: contido no frame do projeto (letterbox) + transform do clipe ativo */}
+                <video ref={videoRef} onTimeUpdate={onMainTime} onEnded={onMainTime} playsInline style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "contain", background: "#000", ...cssTransform(mainXf) }} />
+                {/* overlay do b-roll: cobre o frame (como no flatten), mudo, + transform */}
+                <video ref={brollVideoRef} muted playsInline style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", display: brollActive ? "block" : "none", ...cssTransform(brollXf) }} />
+                {brollActive && <span style={{ position: "absolute", right: 8, top: 8, fontSize: 10, fontWeight: 700, letterSpacing: .5, color: "#fff", background: "rgba(154,90,200,.9)", padding: "2px 8px", borderRadius: 999, zIndex: 2 }}>B-ROLL</span>}
+                {/* box de transformação do clipe SELECIONADO (arrastar = mover · cantos = escalar) */}
+                {boxXf && (
+                  <div onPointerDown={(e) => pvDown(e, "move")} onPointerMove={pvMove} onPointerUp={pvUp}
+                    style={{ position: "absolute", boxSizing: "border-box",
+                      left: `${((1 - boxXf.scale) / 2 + boxXf.x) * 100}%`, top: `${((1 - boxXf.scale) / 2 + boxXf.y) * 100}%`,
+                      width: `${boxXf.scale * 100}%`, height: `${boxXf.scale * 100}%`,
+                      border: "1.5px dashed var(--accent)", cursor: "move", zIndex: 3, touchAction: "none" }}>
+                    {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                      <div key={corner} onPointerDown={(e) => { e.stopPropagation(); pvDown(e, "scale"); }} onPointerMove={pvMove} onPointerUp={pvUp}
+                        style={{ position: "absolute", width: 12, height: 12, background: "var(--accent)", borderRadius: 2, touchAction: "none",
+                          left: corner.includes("w") ? -6 : undefined, right: corner.includes("e") ? -6 : undefined,
+                          top: corner.includes("n") ? -6 : undefined, bottom: corner.includes("s") ? -6 : undefined,
+                          cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize" }} />
+                    ))}
+                  </div>
+                )}
+                {/* GUIA 9:16 fixa — contorno do frame + centro + terços. Não captura cliques. */}
+                {showGuide && (
+                  <div style={{ position: "absolute", left: `${guideL}%`, top: `${guideT}%`, width: `${guideW}%`, height: `${guideH}%`, pointerEvents: "none", zIndex: 5, boxSizing: "border-box", border: "2px solid rgba(255,214,10,.9)", boxShadow: "0 0 0 100vmax rgba(0,0,0,.28)" }}>
+                    {/* linhas de terços (leves) */}
+                    {[33.333, 66.666].map((p) => <div key={"v" + p} style={{ position: "absolute", left: `${p}%`, top: 0, bottom: 0, width: 1, background: "rgba(255,214,10,.28)" }} />)}
+                    {[33.333, 66.666].map((p) => <div key={"h" + p} style={{ position: "absolute", top: `${p}%`, left: 0, right: 0, height: 1, background: "rgba(255,214,10,.28)" }} />)}
+                    {/* cruz de centro (referência fixa) */}
+                    <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "rgba(255,214,10,.55)" }} />
+                    <div style={{ position: "absolute", top: "50%", left: 0, right: 0, height: 1, background: "rgba(255,214,10,.55)" }} />
+                    <span style={{ position: "absolute", left: 4, top: 3, fontSize: 9.5, fontWeight: 700, letterSpacing: .5, color: "rgba(255,214,10,.95)", textShadow: "0 1px 2px rgba(0,0,0,.8)" }}>9:16</span>
+                  </div>
+                )}
+                <button onClick={() => setShowGuide((g) => !g)} title="Mostrar/ocultar a guia 9:16" style={{ position: "absolute", right: 10, bottom: 10, height: 28, padding: "0 10px", borderRadius: 8, border: "none", background: showGuide ? "rgba(255,214,10,.9)" : "rgba(0,0,0,.6)", color: showGuide ? "#141414" : "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer", zIndex: 6 }}>⊞ 9:16</button>
+                <button onClick={togglePlay} title="Tocar/Pausar (espaço)" style={{ position: "absolute", left: 10, bottom: 10, width: 40, height: 40, borderRadius: 999, border: "none", background: "rgba(0,0,0,.6)", color: "#fff", fontSize: 15, cursor: "pointer", zIndex: 6 }}>{playing ? "❚❚" : "▶"}</button>
+              </div>
             </div>
+
+            {/* PAINEL DE PROPRIEDADES do clipe selecionado (Effect Controls) */}
+            {selClip && (() => {
+              const t = getTransform(selClip);
+              const isMain = main.some((c) => c.id === selClip.id);
+              const set = (p: Partial<ClipTransform>) => patchTransform(selClip.id, p);
+              const field = (label: string, value: number, unit: string, min: number, max: number, step: number, toT: (v: number) => Partial<ClipTransform>) => (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "7px 0" }}>
+                  <span style={{ width: 76, fontSize: 11.5, color: "var(--muted)" }}>{label}</span>
+                  <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => set(toT(Number(e.target.value)))} style={{ flex: 1, accentColor: "var(--accent)" }} />
+                  <input type="number" min={min} max={max} step={step} value={value} onChange={(e) => set(toT(Number(e.target.value)))} style={{ width: 62, fontSize: 12, textAlign: "right" }} />
+                  <span style={{ width: 14, fontSize: 11, color: "var(--faint)" }}>{unit}</span>
+                </div>
+              );
+              return (
+                <div style={{ flex: "0 0 auto", borderTop: "1px solid var(--border)", background: "var(--panel)", padding: "10px 14px", maxHeight: "44%", overflowY: "auto" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <strong style={{ fontSize: 12.5 }}>Transformação</strong>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{isMain ? "clipe principal" : "b-roll"}</span>
+                    <span style={{ flex: 1 }} />
+                    <button onClick={() => resetTransform(selClip.id)} style={btn({ fontSize: 11, padding: "3px 10px" })}>Resetar</button>
+                  </div>
+                  {field("Escala", Math.round(t.scale * 100), "%", 10, 500, 1, (v) => ({ scale: clamp(v, 10, 500) / 100 }))}
+                  {field("Opacidade", Math.round(t.opacity * 100), "%", 0, 100, 1, (v) => ({ opacity: clamp(v, 0, 100) / 100 }))}
+                  {field("Velocidade", +t.speed.toFixed(2), "×", 0.25, 4, 0.05, (v) => ({ speed: clamp(v, 0.25, 4) }))}
+                  {field("Posição X", Math.round(t.x * 100), "%", -100, 100, 1, (v) => ({ x: clamp(v, -100, 100) / 100 }))}
+                  {field("Posição Y", Math.round(t.y * 100), "%", -100, 100, 1, (v) => ({ y: clamp(v, -100, 100) / 100 }))}
+                  <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 4 }}>Arraste no preview pra mover · alças dos cantos pra escalar · a velocidade muda a duração na timeline.</div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>

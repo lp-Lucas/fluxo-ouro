@@ -1,7 +1,6 @@
 import { comBase } from '../../os-session';
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptSegment, Cut, FullscreenPopup } from "../../../../shared/timeline";
-import { DEFAULT_POPUP_TRANSITION } from "../../../../shared/timeline";
 import {
   DESIGN_REF_TAGS, FLOW_LAYOUT_TEMPLATES, emptyFlow, getIdentity, identityToPrompt,
   IDENTITY_FONTES, IDENTITY_BOTOES, IDENTITY_ICONES,
@@ -38,6 +37,22 @@ function pollJob(jobId: string, onProgress?: (p: number) => void): Promise<Recor
 }
 const readDataUrl = (file: File, cb: (s: string) => void) => { const r = new FileReader(); r.onload = () => cb(r.result as string); r.readAsDataURL(file); };
 const uid = () => Math.random().toString(36).slice(2, 9);
+
+/**
+ * BLOCOS de motion de um momento: sequências CONTÍGUAS de frases LIGADAS e com vídeo.
+ * Uma frase "sem motion" (skipMotion) ou ainda sem vídeo QUEBRA a sequência — nesse
+ * trecho o vídeo base aparece. Cada bloco vira um popup na timeline (id flow-<mId>-<1ªFraseId>).
+ */
+function motionRuns(m: FlowMoment): FlowPhrase[][] {
+  const runs: FlowPhrase[][] = [];
+  let run: FlowPhrase[] = [];
+  for (const ph of m.phrases) {
+    if (ph.fittedVideoPath && !ph.skipMotion) run.push(ph);
+    else if (run.length) { runs.push(run); run = []; }
+  }
+  if (run.length) runs.push(run);
+  return runs;
+}
 
 /** Carrega as Google Fonts das opções de identidade (pro PREVIEW real no seletor). */
 function ensureGoogleFonts() {
@@ -241,6 +256,49 @@ export function FlowPanel({
     patchPhrase(ph.id, { imagePath: undefined, imageApproved: false, status: "detected" });
 
   /**
+   * USAR MOTION (sem IA): sobe um VÍDEO já pronto → pula design/animação. O backend só
+   * encaixa no tempo da fala (time-fit) e a frase cai direto em "video_ready". O tempo de
+   * tela ainda é ajustável depois (DurationControl → refit sobre o vídeo bruto salvo).
+   */
+  async function subirMotion(ph: FlowPhrase, file: File) {
+    if (!projectId) { setError("Salve o projeto antes de subir o motion."); return; }
+    const { target } = phraseTimes(ph);
+    setJob(ph.id, { kind: "animate", progress: 0.4 });
+    patchPhrase(ph.id, { status: "animating", error: undefined });
+    try {
+      const fd = new FormData();
+      fd.append("video", file);
+      fd.append("projectId", projectId);
+      fd.append("phraseId", ph.id);
+      fd.append("aspect", ph.aspect ?? "9:16");
+      fd.append("targetDuration", String(target));
+      fd.append("minDuration", String(motionMin(ph)));
+      const r = await fetch(comBase("/api/flow/upload-motion"), { method: "POST", body: fd });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? "Falha no upload do motion");
+      patchPhrase(ph.id, {
+        videoPath: d.videoPath as string, fittedVideoPath: d.fittedVideoPath as string,
+        fitInfo: d.fitInfo as FlowPhrase["fitInfo"], motionUploaded: true, status: "video_ready", error: undefined,
+      });
+    } catch (e) { patchPhrase(ph.id, { status: "error", error: (e as Error).message }); }
+    finally { setJob(ph.id, null); }
+  }
+
+  /**
+   * SEM MOTION: liga/desliga a frase do vídeo final. Não apaga nada (design/vídeo ficam);
+   * só a exclui da timeline — nesse trecho aparece o vídeo base. Se o momento já está
+   * posicionado, re-coloca na hora (abre/fecha o "buraco") passando o momento já corrigido.
+   */
+  function setSkipMotion(ph: FlowPhrase, skip: boolean) {
+    patchPhrase(ph.id, { skipMotion: skip });
+    const m = flowRef.current?.moments.find((mm) => mm.phrases.some((p) => p.id === ph.id));
+    if (projectId && m && m.phrases.some((p) => p.status === "placed")) {
+      const fresh = { ...m, phrases: m.phrases.map((p) => (p.id === ph.id ? { ...p, skipMotion: skip } : p)) };
+      colocar(fresh);
+    }
+  }
+
+  /**
    * ANIMAÇÃO CONTÍNUA (método MotionIA): no momento em modo "continua", o design da
    * frase ANTERIOR é o START frame do clipe desta frase — a emenda some por construção.
    * A 1ª frase do momento continua sendo uma ENTRADA normal (fundo vazio → design).
@@ -377,40 +435,57 @@ export function FlowPanel({
   }
 
   /**
-   * COLOCAR NA TIMELINE: junta os clipes do momento num ÚNICO vídeo contínuo (concat
-   * no servidor) e coloca UM popup de tela cheia começando no início da 1ª frase. O
-   * popup IGNORA cortes: sua duração é o tamanho REAL do vídeo concatenado — toca por
-   * inteiro (cortes internos não o encurtam; o motion segue contínuo).
+   * COLOCAR NA TIMELINE: as frases LIGADAS e com vídeo viram BLOCOS de motion. Frases
+   * "sem motion" (skipMotion) ou ainda sem vídeo QUEBRAM a sequência: nesse trecho o
+   * vídeo base aparece (o motion abre um "buraco" e volta na próxima frase ligada, no
+   * tempo certo da fala). Cada bloco = uma sequência contígua de frases ligadas,
+   * concatenada num vídeo contínuo (concat no servidor), num popup de tela cheia que
+   * começa no início da 1ª frase do bloco. O popup IGNORA cortes internos.
    */
   async function colocar(m: FlowMoment) {
-    if (!flow || !projectId) return;
-    const done = m.phrases.filter((ph) => ph.fittedVideoPath);
-    if (done.length === 0) return;
-    if (done.length < m.phrases.length) {
-      setError(`${m.phrases.length - done.length} frase(s) deste momento ainda sem vídeo — coloco só as prontas.`);
+    if (!projectId) return;
+    // BLOCOS contíguos de frases ligadas+com vídeo; skip/sem-vídeo abre um "buraco".
+    const runs = motionRuns(m);
+    const totalIn = m.phrases.filter((p) => !p.skipMotion).length;
+    const totalDone = runs.reduce((a, r) => a + r.length, 0);
+    if (totalDone < totalIn) {
+      setError(`${totalIn - totalDone} frase(s) deste momento ainda sem vídeo — coloco só as prontas.`);
     }
     try {
-      const jobId = await startJob("/api/flow/concat-moment", {
-        projectId, momentId: m.id, videos: done.map((ph) => ph.fittedVideoPath),
-      });
-      const res = await pollJob(jobId);
-      // preserva a posição (at) se o usuário já reposicionou este motion; senão, começa na fala.
-      const existing = flowPopups.find((p) => p.flowPhraseId === m.id);
-      const srcStart = existing ? existing.at : phraseTimes(done[0]).srcStart;
-      // duração = tamanho real do concat (tempo de tela, ignora cortes)
-      const pop: FullscreenPopup = {
-        id: `flow-${m.id}`, type: "fullscreen", at: +srcStart.toFixed(3), duration: +(res.duration as number).toFixed(3),
-        source: "auto", transition: { inType: "none", outType: "none", inDuration: 0, outDuration: 0, easing: "ease" },
-        media: { kind: "video", src: res.videoPath as string }, flowPhraseId: m.id,
-      };
-      // remove popups antigos deste momento (tanto o unificado quanto os por-frase de antes)
-      onPlacePopups([pop], [m.id, ...m.phrases.map((p) => p.id)]);
+      const pops: FullscreenPopup[] = [];
+      for (const r of runs) {
+        const jobId = await startJob("/api/flow/concat-moment", {
+          projectId, momentId: `${m.id}-${r[0].id}`, videos: r.map((ph) => ph.fittedVideoPath),
+        });
+        const res = await pollJob(jobId);
+        const popId = `flow-${m.id}-${r[0].id}`;
+        // preserva a posição (at) se ESTE bloco já foi reposicionado; senão, começa na fala.
+        const existing = flowPopups.find((p) => p.id === popId);
+        const srcStart = existing ? existing.at : phraseTimes(r[0]).srcStart;
+        // duração = tamanho real do concat (tempo de tela, ignora cortes)
+        pops.push({
+          id: popId, type: "fullscreen", at: +srcStart.toFixed(3), duration: +(res.duration as number).toFixed(3),
+          source: "auto", transition: { inType: "none", outType: "none", inDuration: 0, outDuration: 0, easing: "ease" },
+          media: { kind: "video", src: res.videoPath as string }, flowPhraseId: m.id,
+        });
+      }
+      // remove TODOS os popups antigos deste momento (por flowPhraseId): o unificado antigo
+      // (flow-<m.id>), os por-frase e os blocos anteriores. Depois coloca o novo conjunto.
+      onPlacePopups(pops, [m.id, ...m.phrases.map((p) => p.id)]);
+      const inRun = new Set(runs.flat().map((p) => p.id));
       onFlowChange((prev) => {
         const cur = prev ?? emptyFlow();
         return {
           ...cur,
-          placedPopupIds: [...new Set([...cur.placedPopupIds, pop.id])],
-          moments: cur.moments.map((mm) => mm.id !== m.id ? mm : { ...mm, phrases: mm.phrases.map((p) => p.fittedVideoPath ? { ...p, status: "placed" } : p) }),
+          placedPopupIds: [...new Set([...cur.placedPopupIds, ...pops.map((p) => p.id)])],
+          moments: cur.moments.map((mm) => mm.id !== m.id ? mm : {
+            ...mm,
+            phrases: mm.phrases.map((p) =>
+              inRun.has(p.id) ? { ...p, status: "placed" }
+              // frase que saiu (skip) mas estava posicionada volta a "pronta"
+              : (p.fittedVideoPath && p.status === "placed") ? { ...p, status: "video_ready" }
+              : p),
+          }),
         };
       });
     } catch (e) { setError((e as Error).message); }
@@ -420,18 +495,24 @@ export function FlowPanel({
     if (!flow || !projectId) return;
     setResyncing(true); setError(null);
     try {
+      // 1) refaz o time-fit de cada frase POSICIONADA e LIGADA (cortes mudaram → novo alvo).
       const updates: Record<string, Partial<FlowPhrase>> = {};
-      const pops: FullscreenPopup[] = [];
       for (const m of flow.moments) for (const ph of m.phrases) {
-        if (ph.status !== "placed" || !ph.videoPath) continue;
-        const { srcStart, srcDur, target } = phraseTimes(ph);
+        if (ph.status !== "placed" || ph.skipMotion || !ph.videoPath) continue;
+        const { target } = phraseTimes(ph);
         const jobId = await startJob("/api/flow/refit", { projectId, phraseId: ph.id, rawVideo: ph.videoPath, targetDuration: target, aspect: ph.aspect ?? "9:16", minDuration: motionMin(ph) });
         const res = await pollJob(jobId);
         updates[ph.id] = { fittedVideoPath: res.fittedVideoPath as string, fitInfo: res.fitInfo as FlowPhrase["fitInfo"] };
-        pops.push({ id: `flow-${ph.id}`, type: "fullscreen", at: +srcStart.toFixed(3), duration: +srcDur.toFixed(3), source: "auto", transition: DEFAULT_POPUP_TRANSITION, media: { kind: "video", src: res.fittedVideoPath as string }, flowPhraseId: ph.id });
       }
-      onFlowChange({ ...flow, moments: flow.moments.map((m) => ({ ...m, phrases: m.phrases.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)) })) });
-      if (pops.length) onPlacePopups(pops);
+      if (Object.keys(updates).length) {
+        onFlowChange({ ...flow, moments: flow.moments.map((m) => ({ ...m, phrases: m.phrases.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)) })) });
+      }
+      // 2) re-concatena e reposiciona cada momento posicionado, já com os fitted novos.
+      for (const m of flow.moments) {
+        if (!m.phrases.some((p) => p.status === "placed")) continue;
+        const fresh = { ...m, phrases: m.phrases.map((p) => (updates[p.id] ? { ...p, ...updates[p.id] } : p)) };
+        await colocar(fresh);
+      }
     } catch (e) { setError((e as Error).message); }
     finally { setResyncing(false); }
   }
@@ -620,7 +701,9 @@ export function FlowPanel({
               {/* sidebar: telas do vídeo */}
               <div style={{ width: 280, flex: "0 0 auto", borderRight: "1px solid var(--border)", overflowY: "auto", padding: 12, background: "var(--panel)" }}>
                 {moments.map((m, i) => {
-                  const allReady = m.phrases.every((p) => p.status === "video_ready" || p.status === "placed");
+                  // "pronto" só olha as frases LIGADAS (as "sem motion" não precisam de vídeo).
+                  const enabled = m.phrases.filter((p) => !p.skipMotion);
+                  const allReady = enabled.length > 0 && enabled.every((p) => p.status === "video_ready" || p.status === "placed");
                   const placed = m.phrases.some((p) => p.status === "placed");
                   return (
                     <div key={m.id} style={{ marginBottom: 16 }}>
@@ -632,15 +715,21 @@ export function FlowPanel({
                         return (
                           <div key={ph.id}>
                             <div onClick={() => setSelPhraseId(ph.id)} className={active ? undefined : "fo-card"}
-                              style={{ cursor: "pointer", borderRadius: 12, padding: "8px 12px", marginBottom: 4, display: "flex", gap: 8, alignItems: "center", border: `1px solid ${active ? "var(--border-active)" : "transparent"}`, background: active ? "var(--active-grad)" : "transparent", boxShadow: active ? "var(--shadow-active)" : undefined }}>
+                              style={{ cursor: "pointer", borderRadius: 12, padding: "8px 12px", marginBottom: 4, display: "flex", gap: 8, alignItems: "center", border: `1px solid ${active ? "var(--border-active)" : "transparent"}`, background: active ? "var(--active-grad)" : "transparent", boxShadow: active ? "var(--shadow-active)" : undefined, opacity: ph.skipMotion ? 0.5 : 1 }}>
                               {/* miniatura do design: reconhecimento visual imediato da tela */}
                               {ph.imagePath
-                                ? <img src={comBase(ph.imagePath)} alt="" style={{ width: 30, height: 44, objectFit: "cover", borderRadius: 8, flex: "0 0 auto", border: "1px solid var(--border)" }} />
+                                ? <img src={comBase(ph.imagePath)} alt="" style={{ width: 30, height: 44, objectFit: "cover", borderRadius: 8, flex: "0 0 auto", border: "1px solid var(--border)", filter: ph.skipMotion ? "grayscale(1)" : undefined }} />
                                 : <span style={{ width: 30, height: 44, borderRadius: 8, flex: "0 0 auto", border: "1px dashed var(--border)", display: "grid", placeItems: "center", fontSize: 12, color: "var(--faint)" }}>✦</span>}
-                              <div style={{ minWidth: 0 }}>
-                                <div className="fo-clamp2" style={{ fontSize: 12.5, color: active ? "var(--text)" : "var(--muted)", lineHeight: 1.4, marginBottom: 4 }}>"{ph.text}"</div>
-                                <StatusBadge status={ph.status} />
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div className="fo-clamp2" style={{ fontSize: 12.5, color: active ? "var(--text)" : "var(--muted)", lineHeight: 1.4, marginBottom: 4, textDecoration: ph.skipMotion ? "line-through" : undefined }}>"{ph.text}"</div>
+                                {ph.skipMotion ? <span style={{ fontSize: 10.5, color: "var(--faint)", fontWeight: 600 }}>⊘ sem motion</span> : <StatusBadge status={ph.status} />}
                               </div>
+                              {/* toggle rápido: tira/põe o motion desta tela sem abrir o card */}
+                              <button onClick={(e) => { e.stopPropagation(); setSkipMotion(ph, !ph.skipMotion); }}
+                                title={ph.skipMotion ? "reativar o motion desta tela" : "tirar o motion desta tela (mostra o vídeo base nesse trecho)"}
+                                style={{ flex: "0 0 auto", width: 22, height: 22, padding: 0, borderRadius: 6, fontSize: 12, lineHeight: "20px", border: "1px solid var(--border)", background: "transparent", color: ph.skipMotion ? "var(--green)" : "var(--muted)", cursor: "pointer" }}>
+                                {ph.skipMotion ? "＋" : "⊘"}
+                              </button>
                             </div>
                             {/* JUNTAR com a próxima: as duas frases viram UMA tela / UM clipe */}
                             {phIdx < m.phrases.length - 1 && (
@@ -677,7 +766,8 @@ export function FlowPanel({
                 {selPhrase ? (
                   <PhraseCard ph={selPhrase} job={jobs[selPhrase.id]} patch={patchPhrase} times={phraseTimes(selPhrase)} onZoom={setLightbox}
                     onSendChat={enviarChat} onGerarDesign={enviarGerarDesign} cores={identity.cores}
-                    onUseDesign={usarDesign} onUpload={subirDesign} onDescartar={descartarDesign} onCancel={pararGeracao}
+                    onUseDesign={usarDesign} onUpload={subirDesign} onUploadMotion={subirMotion} onToggleSkip={setSkipMotion}
+                    onDescartar={descartarDesign} onCancel={pararGeracao}
                     onApprove={(ph) => patchPhrase(ph.id, { imageApproved: true, status: "approved" })}
                     onGenMotion={gerarPromptMotion} onAnimate={gerarVideo} onAjustarTempo={ajustarTempo}
                     retryKind={retryFns[selPhrase.id]?.kind} onRetry={() => retryFns[selPhrase.id]?.fn()} />
@@ -711,7 +801,7 @@ export function FlowPanel({
 
 const ASPECTS: FlowAspect[] = ["9:16", "16:9", "1:1"];
 
-function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, cores, onUseDesign, onUpload, onDescartar, onCancel, onApprove, onGenMotion, onAnimate, onAjustarTempo, retryKind, onRetry }: {
+function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, cores, onUseDesign, onUpload, onUploadMotion, onToggleSkip, onDescartar, onCancel, onApprove, onGenMotion, onAnimate, onAjustarTempo, retryKind, onRetry }: {
   ph: FlowPhrase; job?: JobUI; patch: (phraseId: string, p: Partial<FlowPhrase>) => void;
   times: { srcStart: number; srcDur: number; target: number }; onZoom: (src: string) => void;
   onSendChat: (ph: FlowPhrase, texto: string, imagens: string[], usarIdentidade: boolean, continuar: boolean) => void;
@@ -719,6 +809,8 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
   cores?: string;
   onUseDesign: (ph: FlowPhrase, url: string) => void;
   onUpload: (ph: FlowPhrase, dataUrl: string) => void;
+  onUploadMotion: (ph: FlowPhrase, file: File) => void;
+  onToggleSkip: (ph: FlowPhrase, skip: boolean) => void;
   onDescartar: (ph: FlowPhrase) => void; onCancel: (ph: FlowPhrase) => void; onApprove: (ph: FlowPhrase) => void;
   onGenMotion: (ph: FlowPhrase) => void; onAnimate: (ph: FlowPhrase) => void;
   onAjustarTempo: (ph: FlowPhrase, novaDuracao: number | undefined) => void;
@@ -728,12 +820,28 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
 
   return (
     <div style={{ paddingTop: 8 }}>
-      {/* título da tela + status */}
+      {/* título da tela + status + toggle "sem motion" */}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <strong style={{ fontSize: 15, lineHeight: 1.45, flex: 1, minWidth: 0 }}>“{ph.text}”</strong>
-        <span style={{ flex: "0 0 auto", marginTop: 2 }}><StatusBadge status={ph.status} /></span>
+        <strong style={{ fontSize: 15, lineHeight: 1.45, flex: 1, minWidth: 0, textDecoration: ph.skipMotion ? "line-through" : undefined, opacity: ph.skipMotion ? 0.6 : 1 }}>“{ph.text}”</strong>
+        <label title="tira o motion desta tela — no vídeo final esse trecho mostra o vídeo base"
+          style={{ flex: "0 0 auto", display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: ph.skipMotion ? "var(--text)" : "var(--muted)", cursor: "pointer" }}>
+          <input type="checkbox" checked={!!ph.skipMotion} onChange={(e) => onToggleSkip(ph, e.target.checked)} />
+          sem motion
+        </label>
+        <span style={{ flex: "0 0 auto", marginTop: 2 }}>{ph.skipMotion ? <span style={{ fontSize: 11, color: "var(--faint)", fontWeight: 600 }}>⊘ sem motion</span> : <StatusBadge status={ph.status} />}</span>
       </div>
 
+      {/* SEM MOTION: colapsa o trabalho da tela — nada disso entra no vídeo */}
+      {ph.skipMotion ? (
+        <div style={{ marginTop: 12, background: "var(--panel)", border: "1px dashed var(--border)", borderRadius: 12, padding: "16px 20px", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, color: "var(--muted)", flex: 1, minWidth: 200 }}>
+            Esta tela está <strong style={{ color: "var(--text)" }}>sem motion</strong> — não entra no vídeo. Nesse trecho aparece o vídeo base.
+            {(ph.imagePath || ph.fittedVideoPath) ? " O design/vídeo já feito fica guardado." : ""}
+          </span>
+          <button onClick={() => onToggleSkip(ph, false)} style={{ background: "var(--green)", color: "#fff", fontWeight: 600, whiteSpace: "nowrap" }}>＋ Reativar motion</button>
+        </div>
+      ) : (
+      <>
       {/* etapas à esquerda · controles da tela à direita */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", margin: "8px 0 4px" }}>
         <Stepper ph={ph} />
@@ -753,6 +861,16 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
           Subir design
           <input type="file" accept="image/*" style={{ display: "none" }} disabled={busy}
             onChange={(e) => { const f = e.target.files?.[0]; if (f) readDataUrl(f, (src) => onUpload(ph, src)); e.target.value = ""; }} />
+        </label>
+        <label title="suba um MOTION já pronto (vídeo, sem IA) — ele vira o motion desta tela, encaixado no tempo da fala"
+          style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer",
+            background: "var(--panel3)", border: "1px solid var(--border)", borderRadius: 12, padding: "4px 12px", color: "var(--text)" }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="m22 8-6 4 6 4V8z" /><rect x="2" y="6" width="14" height="12" rx="2" ry="2" />
+          </svg>
+          Usar motion
+          <input type="file" accept="video/*" style={{ display: "none" }} disabled={busy}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadMotion(ph, f); e.target.value = ""; }} />
         </label>
       </div>
       {/* FALHA na geração (imagem ou vídeo não saiu) → banner claro + botão REGERAR.
@@ -846,11 +964,15 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
       {/* MOTION FINAL — o clipe que vai pra timeline */}
       {ph.fittedVideoPath && (
         <div style={{ marginTop: 12, background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: 12 }}>
-          <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--faint)", marginBottom: 8 }}>Motion final</div>
+          <div style={{ fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: "var(--faint)", marginBottom: 8 }}>
+            Motion final{ph.motionUploaded ? " · motion próprio (subido)" : ""}
+          </div>
           <video src={comBase(ph.fittedVideoPath)} controls muted style={{ maxHeight: 260, borderRadius: 8, border: "1px solid var(--border)" }} />
           {ph.fitInfo && <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>time-fit: {ph.fitInfo.strategy} · {ph.fitInfo.rawDuration}s → {ph.fitInfo.targetDuration}s (×{ph.fitInfo.speed})</p>}
           <DurationControl ph={ph} target={times.target} busy={busy} onAjustar={onAjustarTempo} />
         </div>
+      )}
+      </>
       )}
     </div>
   );
@@ -861,10 +983,12 @@ function PhraseCard({ ph, job, patch, times, onZoom, onSendChat, onGerarDesign, 
  * onde a frase está e o que falta. Derivado dos artefatos/status — sem estado próprio.
  */
 function Stepper({ ph }: { ph: FlowPhrase }) {
+  // motion PRÓPRIO (subido) pula design/aprovação — o vídeo pronto já cobre essas etapas.
+  const hasMotion = !!ph.fittedVideoPath || ph.status === "video_ready" || ph.status === "placed";
   const done = [
-    !!ph.imagePath,
-    !!ph.imageApproved,
-    !!ph.fittedVideoPath || ph.status === "video_ready" || ph.status === "placed",
+    !!ph.imagePath || (ph.motionUploaded && hasMotion),
+    !!ph.imageApproved || (ph.motionUploaded && hasMotion),
+    hasMotion,
     ph.status === "placed",
   ];
   const labels = ["Design", "Aprovação", "Animação", "Timeline"];
@@ -980,11 +1104,17 @@ function MotionEditor({ durationSec, cuts, moments, popups, getTimes, jobs, vide
   }, []);
   const pps = trackW / dur;
 
-  // relaciona cada popup colocado ao seu momento (popup.flowPhraseId === moment.id)
+  // relaciona cada popup ao SEU bloco do momento (popup.flowPhraseId === moment.id).
+  // O id do popup (flow-<mId>-<1ªFraseId>) diz qual bloco é — evita duplicar clipes
+  // quando o momento tem mais de um bloco (frases "sem motion" no meio).
   const blocks = popups.map((p) => {
     const m = moments.find((mm) => mm.id === p.flowPhraseId);
-    const clips = m ? m.phrases.filter((ph) => ph.fittedVideoPath) : [];
-    return { p, clips };
+    if (!m) return { p, clips: [] as FlowPhrase[] };
+    const runs = motionRuns(m);
+    const prefix = `flow-${m.id}-`;
+    const firstId = p.id.startsWith(prefix) ? p.id.slice(prefix.length) : null;
+    const run = (firstId && runs.find((r) => r[0].id === firstId)) || runs[0] || [];
+    return { p, clips: run };
   }).filter((b) => b.clips.length > 0);
 
   // estado vivo: posição por popup, duração por clipe (drag mexe; ao soltar, aplica)

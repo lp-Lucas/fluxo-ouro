@@ -177,6 +177,14 @@ export interface FlowPhrase {
   overrideDuration?: number;  // tempo de tela manual (s) — o usuário força; senão = fala
   fittedVideoPath?: string;   // vídeo pós time-fit (o que entra na timeline)
   fitInfo?: { rawDuration: number; targetDuration: number; speed: number; strategy: FitStrategy };
+  /**
+   * SEM MOTION: a frase é EXCLUÍDA do vídeo final — nesse trecho o vídeo base aparece
+   * (o motion abre um "buraco" e volta na próxima frase ligada). O design/vídeo já feito
+   * é preservado (só não entra na timeline); reativar traz tudo de volta.
+   */
+  skipMotion?: boolean;
+  /** Motion PRONTO subido pelo usuário (sem IA): pula design/animação, cai em video_ready. */
+  motionUploaded?: boolean;
   status: FlowPhraseStatus;
   error?: string;
 }

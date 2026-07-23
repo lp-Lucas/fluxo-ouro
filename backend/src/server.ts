@@ -24,7 +24,11 @@ import { timeFit } from "./flow/timeFit.js";
 import { saveImageFit, makeStartFrame, renderEntranceClip, runFfmpeg, probeDuration, probeImageDims } from "./flow/ffmpeg.js";
 import { getFlowPreset, aspectDims, identityToPrompt, colorLaw, type FlowAspect, type FlowIdentity } from "../../shared/flow.js";
 import { mixBackgroundMusic } from "./music/mixMusic.js";
+import { tratarAudio, chaveOrigem } from "./audio/enhance.js";
+import { isolamentoDisponivel } from "./audio/isolate.js";
+import { DEFAULT_AUDIO, masterParams, type AudioSettings } from "../../shared/audio.js";
 import { flattenAssembly } from "./assembly/flatten.js";
+import { getTransform, type ClipTransform } from "../../shared/assembly.js";
 import {
   listMetas, readProject, createProject, saveProject, renameProject, deleteProject,
   PROJECTS_ROOT, assetFsPath, ProjectConflictError,
@@ -223,9 +227,10 @@ app.post("/api/assembly/media", upload.single("video"), async (req, res) => {
  */
 app.post("/api/assembly/flatten", async (req, res) => {
   try {
+    type ClipIn = { asset: string; inPoint: number; outPoint: number; transform?: ClipTransform };
     const body = (req.body ?? {}) as {
       projectId?: string; width?: number; height?: number;
-      assembly?: { main?: Array<{ asset: string; inPoint: number; outPoint: number }>; brolls?: Array<{ asset: string; inPoint: number; outPoint: number; timelineStart: number }> };
+      assembly?: { main?: ClipIn[]; brolls?: Array<ClipIn & { timelineStart: number }> };
     };
     const main = body.assembly?.main ?? [];
     if (!main.length) { res.status(400).json({ error: "A pista principal precisa de ao menos um clipe." }); return; }
@@ -238,12 +243,43 @@ app.post("/api/assembly/flatten", async (req, res) => {
       if (fs.existsSync(u)) return u;
       throw new Error(`Clipe não encontrado: ${name}`);
     };
-    const mainF = main.map((c) => ({ path: resolve(c.asset), in: Number(c.inPoint) || 0, out: Number(c.outPoint) || 0 }));
-    const brollF = (body.assembly?.brolls ?? []).map((b) => ({ path: resolve(b.asset), in: Number(b.inPoint) || 0, out: Number(b.outPoint) || 0, timelineStart: Number(b.timelineStart) || 0 }));
+    const norm = (t?: ClipTransform): ClipTransform | undefined => t ? getTransform({ transform: t }) : undefined;
+    const mainF = main.map((c) => ({ path: resolve(c.asset), in: Number(c.inPoint) || 0, out: Number(c.outPoint) || 0, transform: norm(c.transform) }));
+    const brollF = (body.assembly?.brolls ?? []).map((b) => ({ path: resolve(b.asset), in: Number(b.inPoint) || 0, out: Number(b.outPoint) || 0, timelineStart: Number(b.timelineStart) || 0, transform: norm(b.transform) }));
 
     const outName = `flat-${crypto.randomUUID()}.mp4`;
     const outPath = path.join(UPLOAD_DIR, outName);
     const { durationSec } = await flattenAssembly(mainF, brollF, w, h, outPath);
+
+    // MODO REALOCAR (padrão do Montador): o projeto é remapeado no front pelo mapa de
+    // material — então NÃO re-transcrevemos tudo (isso apagaria as correções de texto).
+    // Transcrevemos SÓ os trechos de material NOVO e devolvemos pro front encaixar.
+    const modo = String((req.body as { mode?: string }).mode ?? "reset");
+    if (modo === "remap") {
+      const regioes = (((req.body as { newRegions?: Array<{ start: number; end: number }> }).newRegions) ?? [])
+        .map((r) => ({ start: Math.max(0, Number(r.start) || 0), end: Math.min(durationSec, Number(r.end) || 0) }))
+        .filter((r) => r.end - r.start > 0.15);
+      const novos: unknown[] = [];
+      for (const r of regioes) {
+        // só o ÁUDIO da fatia (16k mono) — é o que o whisper usa, e sai rápido.
+        const wav = path.join(UPLOAD_DIR, `newmat-${crypto.randomUUID()}.wav`);
+        try {
+          await runFfmpeg(["-y", "-ss", String(r.start), "-to", String(r.end), "-i", outPath,
+            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav], undefined, "assembly-newmat");
+          const t = await runTranscription(wav);
+          // desloca os tempos da fatia pro tempo da timeline nova
+          for (const seg of (t.transcript as Array<{ start: number; end: number; words?: Array<{ start: number; end: number }> }>)) {
+            seg.start += r.start; seg.end += r.start;
+            for (const wd of seg.words ?? []) { wd.start += r.start; wd.end += r.start; }
+            novos.push(seg);
+          }
+        } finally { fs.rm(wav, () => {}); }
+      }
+      console.log(`[ASSEMBLY] flatten remap: ${regioes.length} trecho(s) de material novo transcrito(s)`);
+      res.json({ videoFile: outName, fileName: outName, durationSec, width: w, height: h, newSegments: novos });
+      return;
+    }
+
     const result = await runTranscription(outPath);
     // ...result primeiro: os campos abaixo (source unificado) SEMPRE mandam sobre a transcrição.
     res.json({ ...result, videoFile: outName, fileName: outName, durationSec, width: w, height: h });
@@ -599,16 +635,34 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
     // mantidos emendados por crossfade equal-power. Fonte do <Audio> global no Remotion
     // (vídeos entram mudos). Fonte única, idêntica ao preview. Fallback: sem WAV, o áudio
     // volta a sair dos próprios segmentos de vídeo.
+    // ── ÁUDIO TRATADO (voz limpa): quando ligado, o decupado passa a sair da VOZ
+    // TRATADA em vez do vídeo bruto. Só é seguro porque o tratador garante a
+    // duração EXATA da origem — os spans abaixo são em tempo de fonte. Se o
+    // tratamento falhar, segue com o áudio original (nunca derruba o export).
+    let audioBase = sourcePath;
+    let tratadoTag = "";
+    if (props.audio?.enhance) {
+      try {
+        const cfgAudio = { ...DEFAULT_AUDIO, ...(props.audio as Partial<AudioSettings>) } as AudioSettings;
+        const r = await tratarAudio(sourcePath, cfgAudio, UPLOAD_DIR, { signal: ac.signal });
+        audioBase = r.outPath;
+        tratadoTag = `-trat${crypto.createHash("md5").update(masterParams(cfgAudio)).digest("hex").slice(0, 6)}`;
+        console.log(`[EXPORT] job ${jobId}: áudio tratado (${r.motor}, ${r.lufsAntes?.toFixed(1) ?? "?"} → ${r.lufsDepois?.toFixed(1) ?? "?"} LUFS)`);
+      } catch (e) {
+        console.error("[EXPORT] tratamento de áudio falhou (segue com o original):", (e as Error).message);
+      }
+    }
+
     let audioSrc: string | undefined;
     try {
       const plan = buildCutPlan(Number(props.durationSec ?? 0), (props.cuts ?? []) as Cut[]);
       if (plan.segments.length > 0) {
         const cutsHash = crypto.createHash("md5")
           .update(JSON.stringify(props.cuts ?? []) + `:${props.durationSec}`).digest("hex").slice(0, 8);
-        const wavName = `audio_decupado-${file.filename}-${cutsHash}.wav`;
+        const wavName = `audio_decupado-${file.filename}-${cutsHash}${tratadoTag}.wav`;
         const wavPath = path.join(UPLOAD_DIR, wavName);
         if (!fs.existsSync(wavPath)) {
-          await renderDecupadoAudio(sourcePath, plan.segments.map((s) => ({ srcStart: s.srcStart, srcEnd: s.srcEnd })), wavPath);
+          await renderDecupadoAudio(audioBase, plan.segments.map((s) => ({ srcStart: s.srcStart, srcEnd: s.srcEnd })), wavPath);
         }
         audioSrc = `http://localhost:${PORT}/uploads/${wavName}`;
         console.log(`[EXPORT] job ${jobId}: áudio decupado pronto (${plan.segments.length} segmentos)`);
@@ -687,6 +741,94 @@ app.post("/api/lut", upload.single("lut"), (req, res) => {
 app.post("/api/music", upload.single("music"), (req, res) => {
   if (!req.file) { res.status(400).json({ error: "Nenhum arquivo de áudio enviado (campo 'music')." }); return; }
   res.json({ url: `/uploads/${req.file.filename}` });
+});
+
+// ─────────────────── TRATAMENTO DE ÁUDIO (voz limpa, estilo Adobe Podcast) ───────────────────
+// Job próprio (não reusa o do FLOW): o isolamento de um vídeo longo passa fácil dos
+// 12 min de teto daquele, e cancelar aqui precisa abortar a chamada externa no meio.
+type AudioJob = {
+  status: "running" | "done" | "error";
+  progress: number; etapa: string;
+  error?: string; result?: unknown; abort?: () => void;
+};
+const audioJobs = new Map<string, AudioJob>();
+
+/** Resolve o arquivo de ORIGEM do tratamento: asset do projeto ou upload avulso. */
+function origemDoTratamento(body: { projectId?: string; asset?: string }, file?: { path: string }): string {
+  if (file) return file.path;
+  if (body.projectId && body.asset) {
+    const p = assetFsPath(String(body.projectId), String(body.asset).replace(/.*\//, ""));
+    if (fs.existsSync(p)) return p;
+    throw new Error("asset do projeto não encontrado");
+  }
+  throw new Error("envie o vídeo (campo 'video') ou projectId + asset");
+}
+
+/**
+ * Enfileira o tratamento. Devolve `{ id }` na hora; a UI polla o progresso.
+ * Aceita os dois caminhos de origem do editor: projeto salvo (sem upload — rápido)
+ * ou arquivo local ainda não salvo (upload).
+ */
+app.post("/api/audio/enhance", upload.single("video"), (req, res) => {
+  const body = (req.body ?? {}) as { projectId?: string; asset?: string; settings?: string; forcar?: string };
+  let sourcePath: string;
+  try {
+    sourcePath = origemDoTratamento(body, req.file);
+  } catch (e) {
+    if (req.file) fs.rm(req.file.path, () => {});
+    res.status(400).json({ error: (e as Error).message });
+    return;
+  }
+
+  const cfg: AudioSettings = { ...DEFAULT_AUDIO, ...JSON.parse(body.settings ?? "{}") as Partial<AudioSettings>, enhance: true };
+  const ehUpload = Boolean(req.file);
+
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const job: AudioJob = { status: "running", progress: 0, etapa: "Na fila" };
+  audioJobs.set(id, job);
+  const ac = new AbortController();
+  job.abort = () => ac.abort();
+  const timer = setTimeout(() => ac.abort(), 45 * 60 * 1000); // vídeo longo isola em muitos chunks
+
+  tratarAudio(sourcePath, cfg, UPLOAD_DIR, {
+    signal: ac.signal,
+    // "tratar de novo": descarta o cache e refaz o isolamento (custa crédito).
+    forcar: body.forcar === "1",
+    onProgress: ({ p, etapa }) => { job.progress = p; job.etapa = etapa; },
+  })
+    .then((r) => {
+      job.status = "done"; job.progress = 1; job.etapa = "Pronto";
+      job.result = {
+        url: `/uploads/${path.basename(r.outPath)}`,
+        key: `${chaveOrigem(sourcePath)}:${masterParams(cfg)}`,
+        lufsAntes: r.lufsAntes, lufsDepois: r.lufsDepois, motor: r.motor, aviso: r.aviso,
+      };
+      console.log(`[AUDIO] job ${id}: pronto (${r.motor}, ${r.lufsAntes?.toFixed(1) ?? "?"} → ${r.lufsDepois?.toFixed(1) ?? "?"} LUFS)`);
+    })
+    .catch((e) => {
+      job.status = "error";
+      job.error = ac.signal.aborted ? "tratamento cancelado" : ((e as Error).message || "Falha ao tratar o áudio");
+      console.error(`[AUDIO] job ${id} ERRO:`, e);
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      if (ehUpload) fs.rm(sourcePath, () => {});
+    });
+
+  res.status(202).json({ id, isolamento: isolamentoDisponivel() });
+});
+
+app.get("/api/audio/enhance/progress/:id", (req, res) => {
+  const j = audioJobs.get(req.params.id);
+  if (!j) { res.status(404).json({ error: "job não encontrado" }); return; }
+  res.json({ status: j.status, progress: j.progress, etapa: j.etapa, error: j.error, result: j.result });
+});
+
+app.post("/api/audio/enhance/cancel/:id", (req, res) => {
+  const j = audioJobs.get(req.params.id);
+  if (!j) { res.status(404).json({ error: "job não encontrado" }); return; }
+  if (j.status === "running") j.abort?.();
+  res.json({ ok: true });
 });
 
 /**
@@ -1354,6 +1496,36 @@ app.post("/api/flow/upload-design", async (req, res) => {
     console.log(`[FLOW] upload-design ${phraseId}: design próprio salvo (${w}x${h})`);
     res.json({ imagePath: asset.url });
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
+
+/**
+ * UPLOAD DE MOTION PRONTO: o usuário sobe um VÍDEO já feito (multipart, campo "video");
+ * pulamos design/animação — o vídeo vira o motion da frase direto. Fazemos só o TIME-FIT
+ * (encaixa na duração da fala, igual ao design) e devolvemos videoPath (bruto, p/ refit
+ * depois) + fittedVideoPath (o que entra na timeline). Espelha o /api/flow/upload-design.
+ */
+app.post("/api/flow/upload-motion", upload.single("video"), async (req, res) => {
+  if (!req.file) { res.status(400).json({ error: "Nenhum arquivo enviado (campo 'video')." }); return; }
+  try {
+    const { projectId, phraseId, aspect = "9:16", targetDuration, minDuration = 0 } = req.body ?? {};
+    if (!projectId) { res.status(400).json({ error: "projectId ausente (salve o projeto antes de subir)." }); fs.rm(req.file.path, () => {}); return; }
+    const target = Number(targetDuration);
+    if (!(target > 0)) { res.status(400).json({ error: "targetDuration ausente ou inválido." }); fs.rm(req.file.path, () => {}); return; }
+    const { w, h } = aspectDims(String(aspect) as FlowAspect);
+    const ext = path.extname(req.file.originalname || "").toLowerCase() || ".mp4";
+    // vídeo bruto vira asset do projeto (persiste) — o refit posterior lê daqui.
+    const raw = flowAsset(String(projectId), `upmotion-${String(phraseId)}-${Date.now().toString(36)}${ext}`);
+    try { fs.renameSync(req.file.path, raw.fsPath); } catch { fs.copyFileSync(req.file.path, raw.fsPath); fs.rm(req.file.path, () => {}); }
+    const minDur = Number(minDuration) || 0;
+    const fit = flowAsset(String(projectId), `fit-${String(phraseId)}-${flowHash(path.basename(raw.fsPath) + ":" + target + ":" + aspect + ":fwd:min" + minDur)}.mp4`);
+    // motion pronto = sem inversão (não é saída de Veo); só encaixa no tempo da fala.
+    const { fitInfo } = await timeFit(raw.fsPath, target, fit.fsPath, { w, h }, undefined, { reverse: false, minDuration: minDur });
+    console.log(`[FLOW] upload-motion ${phraseId}: motion próprio salvo (${w}x${h}, alvo ${target}s)`);
+    res.json({ videoPath: raw.url, fittedVideoPath: fit.url, fitInfo });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+    if (req.file) fs.rm(req.file.path, () => {});
+  }
 });
 
 /** Design: gera a imagem de UMA frase (prompt + refs + proporção) → assets/flow/. */

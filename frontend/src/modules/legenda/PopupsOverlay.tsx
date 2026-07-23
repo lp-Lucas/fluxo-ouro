@@ -54,6 +54,10 @@ function PreviewFullscreenVideo({ src, at, duration, time, playing, plan }: {
   }
   target = Math.max(0, Math.min(duration, target));
   const ativo = playing && target > 0 && target < duration; // dentro da janela do popup
+  // refs vivos p/ os handlers de load (play() pode ser chamado ANTES do vídeo carregar sob a
+  // rede do subpath — sem isto o motion ficava num frame congelado por nunca ter tocado).
+  const ativoR = useRef(ativo); ativoR.current = ativo;
+  const targetR = useRef(target); targetR.current = target;
 
   // play/pause nativo espelhando o principal (só dentro da janela)
   useEffect(() => {
@@ -62,16 +66,26 @@ function PreviewFullscreenVideo({ src, at, duration, time, playing, plan }: {
     else v.pause();
   }, [ativo]);
 
-  // correção de DRIFT esparsa: tocando nativo, o desvio fica ~0 — seek só quando
-  // desgarra de verdade (seek do usuário, cut-jump com remap, buffer).
+  // correção de DRIFT: TOCANDO, deixa o playback nativo correr e só re-sincroniza em desvio
+  // GRANDE (cut-jump/seek do usuário). Corrigir drift pequeno a cada frame causava THRASH de
+  // seek sob a rede do subpath (o buffer não acompanha) → o motion congelava num frame.
+  // PAUSADO: crava o frame do scrub.
   useEffect(() => {
     const v = ref.current; if (!v) return;
     const drift = Math.abs(v.currentTime - target);
-    if (drift > (ativo ? 0.2 : 0.05)) { try { v.currentTime = target; } catch { /* buffering */ } }
+    if (drift > (ativo ? 0.75 : 0.05)) { try { v.currentTime = target; } catch { /* buffering */ } }
   }, [time, target, ativo]);
+
+  // Quando o vídeo fica pronto DEPOIS de ativar (rede do subpath), garante o play + a posição.
+  const aoFicarPronto = () => {
+    const v = ref.current; if (!v || !ativoR.current) return;
+    if (Math.abs(v.currentTime - targetR.current) > 0.3) { try { v.currentTime = targetR.current; } catch { /* */ } }
+    v.play().catch(() => { /* autoplay/buffer */ });
+  };
 
   return (
     <video ref={ref} src={comBase(src)} muted playsInline preload="auto"
+      onLoadedData={aoFicarPronto} onCanPlay={aoFicarPronto}
       style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
   );
 }

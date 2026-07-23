@@ -36,6 +36,9 @@ function capFullHD(w: number, h: number) {
  */
 export function KaraokePreview({
   videoFile,
+  videoUrl,
+  projectId,
+  sourceAsset,
   transcript,
   style,
   onStyleChange,
@@ -56,7 +59,12 @@ export function KaraokePreview({
   hideStyleControls = false,
   transport,
 }: {
-  videoFile: File;
+  videoFile: File | null;
+  /** URL do vídeo (servidor/blob) — o preview STREAMA daqui quando não há blob local. */
+  videoUrl: string;
+  /** projeto atual: com projectId + sourceAsset o proxy é gerado SERVER-SIDE (sem upload). */
+  projectId?: string | null;
+  sourceAsset?: string;
   transcript: TranscriptSegment[];
   style: CaptionStyle;
   onStyleChange: (s: CaptionStyle) => void;
@@ -149,6 +157,7 @@ export function KaraokePreview({
    * legendas dessincronizam — foi um bug real).
    */
   async function corrigirAudio() {
+    if (!videoFile) return; // sem blob ainda (streaming) — o proxy já toca AAC; espera o background
     setFixingAudio(true);
     try {
       const fd = new FormData();
@@ -212,12 +221,14 @@ export function KaraokePreview({
     [transcript, cuts, captions, style.maxWords],
   );
 
-  // Cria e revoga a object URL no MESMO efeito (sobrevive ao StrictMode em dev).
+  // Fonte do <video>: com blob local, cria a object URL; SEM blob (abrindo projeto), STREAMA a
+  // URL do servidor direto — abrir não espera baixar o arquivo inteiro.
   useEffect(() => {
+    if (!videoFile) { setUrl(videoUrl); return; }
     const u = URL.createObjectURL(videoFile);
     setUrl(u);
     return () => URL.revokeObjectURL(u);
-  }, [videoFile]);
+  }, [videoFile, videoUrl]);
 
   // Pede o PROXY ao backend (cache por nome+tamanho+mtime → gera 1× por vídeo).
   // Enquanto não chega, o preview toca o original — a troca preserva posição/estado.
@@ -228,10 +239,16 @@ export function KaraokePreview({
     let dead = false;
     (async () => {
       try {
-        const fd = new FormData();
-        fd.append("video", videoFile);
-        fd.append("key", `${videoFile.name}-${videoFile.size}-${videoFile.lastModified}`);
-        const r = await fetch(comBase("/api/proxy"), { method: "POST", body: fd });
+        let r: Response;
+        if (projectId && sourceAsset) {
+          // PROXY SERVER-SIDE pelo asset — não re-envia o arquivo (era o que travava a abertura).
+          r = await fetch(comBase("/api/proxy-asset"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId, asset: sourceAsset }) });
+        } else if (videoFile) {
+          const fd = new FormData();
+          fd.append("video", videoFile);
+          fd.append("key", `${videoFile.name}-${videoFile.size}-${videoFile.lastModified}`);
+          r = await fetch(comBase("/api/proxy"), { method: "POST", body: fd });
+        } else { return; }
         const d = await r.json();
         if (dead) return;
         if (r.ok && d.url) {
@@ -245,7 +262,7 @@ export function KaraokePreview({
       } catch { if (!dead) setProxyFailed(true); }
     })();
     return () => { dead = true; };
-  }, [videoFile, useProxy]);
+  }, [videoFile, useProxy, projectId, sourceAsset]);
 
   // fonte efetiva do <video> + troca SEM perder a posição (proxy chega no meio da sessão)
   const src = useProxy && proxyUrl ? proxyUrl : url;
@@ -480,7 +497,7 @@ export function KaraokePreview({
 
       {/* Timeline aqui só no modo AVULSO (sem a ponte) — com transporte, ela mora
           na barra FIXA inferior do app. */}
-      {!transport && duration > 0 && (
+      {!transport && duration > 0 && videoFile && (
         <CutTimeline
           videoFile={videoFile}
           duration={duration}

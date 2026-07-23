@@ -308,55 +308,61 @@ app.post("/api/fix-audio", upload.single("video"), async (req, res) => {
 // mesmo arquivo corrompiam o proxy (NAL inválido → vídeo preto) — foi um bug real.
 const proxyInflight = new Map<string, Promise<void>>();
 
+/** Gera (ou reusa) o proxy 540p de `inputPath` sob a chave `key`. Cache por chave — 1× por vídeo. */
+async function buildProxyFile(inputPath: string, key: string): Promise<{ out: string; srcW?: number; srcH?: number }> {
+  const out = path.join(UPLOAD_DIR, `proxy-v2-${key}.mp4`);
+  const dims = await probeImageDims(inputPath).catch(() => null);
+  if (!fs.existsSync(out)) {
+    let job = proxyInflight.get(key);
+    if (!job) {
+      job = (async () => {
+        const t0 = Date.now();
+        const tmp = path.join(UPLOAD_DIR, `proxy-v2-${key}.part-${Date.now().toString(36)}.mp4`);
+        try {
+          await runFfmpeg([
+            "-y", "-i", inputPath,
+            "-vf", "scale=trunc(iw*min(1\\,960/max(iw\\,ih))/2)*2:trunc(ih*min(1\\,960/max(iw\\,ih))/2)*2",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15", "-bf", "0", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", tmp,
+          ], undefined, "proxy-preview");
+          if (!fs.existsSync(out)) fs.renameSync(tmp, out); else fs.rmSync(tmp, { force: true });
+          console.log(`[PROXY] ${key} gerado em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+        } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+      })().finally(() => proxyInflight.delete(key));
+      proxyInflight.set(key, job);
+    }
+    await job;
+  }
+  return { out, srcW: dims?.w, srcH: dims?.h };
+}
+
+// PROXY por UPLOAD (fluxo de criação: arquivo local ainda não é asset).
 app.post("/api/proxy", upload.single("video"), async (req, res) => {
   if (!req.file) { res.status(400).json({ error: "Nenhum arquivo enviado (campo 'video')." }); return; }
   const file = req.file;
   const key = String(req.body.key ?? path.parse(file.filename).name).replace(/[^a-z0-9_.-]/gi, "").slice(0, 120);
-  // v2 no nome: os proxies v1 nasciam com EMPTY EDIT (+83ms vídeo / +62ms áudio, 21ms de
-  // dessincronia A/V) — b-frames + avoid_negative_ts=make_zero. Prefixo novo fura o cache.
-  const out = path.join(UPLOAD_DIR, `proxy-v2-${key}.mp4`);
   try {
-    // dimensões do ORIGINAL: o front precisa delas p/ o palco WYSIWYG quando o navegador
-    // NÃO consegue tocar o original (HEVC/MKV) — aí o proxy é a ÚNICA fonte visível.
-    const dims = await probeImageDims(file.path).catch(() => null);
-    if (!fs.existsSync(out)) {
-      let job = proxyInflight.get(key);
-      if (!job) {
-        job = (async () => {
-          const t0 = Date.now();
-          // escreve num TEMP único e RENOMEIA no fim (atômico): nunca se serve arquivo
-          // pela metade, e um segundo job jamais escreve por cima do primeiro.
-          const tmp = path.join(UPLOAD_DIR, `proxy-v2-${key}.part-${Date.now().toString(36)}.mp4`);
-          try {
-            await runFfmpeg([
-              "-y", "-i", file.path,
-              // lado maior ≤ 960, mantendo proporção e dimensões pares
-              "-vf", "scale=trunc(iw*min(1\\,960/max(iw\\,ih))/2)*2:trunc(ih*min(1\\,960/max(iw\\,ih))/2)*2",
-              // -bf 0: sem B-frames não há DTS negativo, e o mux não desloca os streams
-              // (com make_zero, o proxy nascia com +83ms de vazio no vídeo e +62ms no
-              // áudio — 21ms de dessincronia A/V que virava "legenda fora da fala").
-              "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15", "-bf", "0", "-pix_fmt", "yuv420p",
-              "-c:a", "aac", "-b:a", "128k",
-              "-movflags", "+faststart",
-              tmp,
-            ], undefined, "proxy-preview");
-            if (!fs.existsSync(out)) fs.renameSync(tmp, out);
-            else fs.rmSync(tmp, { force: true });
-            console.log(`[PROXY] ${key} gerado em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-          } catch (e) {
-            fs.rmSync(tmp, { force: true });
-            throw e;
-          }
-        })().finally(() => proxyInflight.delete(key));
-        proxyInflight.set(key, job);
-      }
-      await job;
-    }
-    res.json({ url: `/uploads/${path.basename(out)}`, srcW: dims?.w, srcH: dims?.h });
+    const { out, srcW, srcH } = await buildProxyFile(file.path, key);
+    res.json({ url: `/uploads/${path.basename(out)}`, srcW, srcH });
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
-  } finally {
-    fs.rm(file.path, () => {});
+  } finally { fs.rm(file.path, () => {}); }
+});
+
+// PROXY por ASSET (abrir projeto): usa o vídeo que JÁ está no servidor — SEM upload do navegador
+// (era o que fazia abrir um projeto levar minutos). Chave estável por projeto+asset -> gera 1×.
+app.post("/api/proxy-asset", async (req, res) => {
+  const body = (req.body ?? {}) as { projectId?: string; asset?: string };
+  if (!body.projectId || !body.asset) { res.status(400).json({ error: "projectId e asset obrigatórios" }); return; }
+  const name = String(body.asset).replace(/.*\//, "");
+  const inputPath = assetFsPath(String(body.projectId), name);
+  if (!fs.existsSync(inputPath)) { res.status(404).json({ error: "asset não encontrado" }); return; }
+  const key = `proj-${body.projectId}-${name}`.replace(/[^a-z0-9_.-]/gi, "").slice(0, 120);
+  try {
+    const { out, srcW, srcH } = await buildProxyFile(inputPath, key);
+    res.json({ url: `/uploads/${path.basename(out)}`, srcW, srcH });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 

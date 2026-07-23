@@ -64,6 +64,9 @@ function readVideoDims(src: string): Promise<{ w: number; h: number; dur: number
 
 export function App() {
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  // URL do vídeo (servidor ou blob local): o preview STREAMA daqui — abrir NÃO espera baixar o
+  // arquivo inteiro. O `videoFile` (blob) chega em background, só p/ waveform/export.
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [lut, setLut] = useState<ParsedLut | null>(null);
   const [lutName, setLutName] = useState<string | null>(null);
   const [lutText, setLutText] = useState<string | null>(null);
@@ -229,8 +232,8 @@ export function App() {
   const effectiveColor = colorEnabled ? color : DEFAULT_COLOR;
 
   // refs sempre atuais (para autosave/reload-ao-focar lerem sem closure obsoleta)
-  const latest = useRef({ doc, docExtra, projectId, lastSavedAt, saveState, videoFile, assembly });
-  latest.current = { doc, docExtra, projectId, lastSavedAt, saveState, videoFile, assembly };
+  const latest = useRef({ doc, docExtra, projectId, lastSavedAt, saveState, videoFile, videoUrl, assembly });
+  latest.current = { doc, docExtra, projectId, lastSavedAt, saveState, videoFile, videoUrl, assembly };
 
   // ───────── LUT (igual antes) ─────────
   async function loadLutFromText(text: string, name: string, intensity: number, colorForLut: ColorSettings) {
@@ -264,7 +267,7 @@ export function App() {
   const currentColorPreset = (name: string): ColorPreset => ({ name, color, lutText: lutText ?? undefined });
 
   // ───────── Projetos: carregar / criar / abrir / salvar ─────────
-  function loadInto(pf: ProjectFile, file: File) {
+  function loadInto(pf: ProjectFile, file: File | null, url: string) {
     const d = pf.document;
     setDocExtra({ sourceVideo: d.sourceVideo, durationSec: d.durationSec, width: d.width, height: d.height });
     setAssembly(d.assembly);
@@ -277,6 +280,7 @@ export function App() {
     const caps = syncCaptionsText(bootstrapCaptionWordIds(d.captions ?? [], tr), tr);
     reset({ transcript: tr, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma ?? DEFAULT_CHROMA, flow: d.flow, music: d.music, captions: caps });
     setVideoFile(file);
+    setVideoUrl(url);
     setProjectId(pf.meta.id); setProjectName(pf.meta.name);
     setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
     setShowProjects(false); setBusy(null);
@@ -300,7 +304,7 @@ export function App() {
       const pf = await pr.json();
       if (!pr.ok) throw new Error(pf.error ?? "Falha ao criar projeto");
       setLut(null); setLutName(null); setLutText(null);
-      loadInto(pf, video);
+      loadInto(pf, video, URL.createObjectURL(video));
     } catch (e) { setBusy(null); alert("Erro ao criar projeto: " + (e as Error).message); }
   }
 
@@ -316,23 +320,20 @@ export function App() {
       });
       const pf: ProjectFile = await r.json();
       if (!r.ok) throw new Error((pf as unknown as { error: string }).error ?? "Falha ao abrir");
-      const vr = await fetch(comBase(pf.document.sourceVideo)).catch(() => {
-        throw new Error("falha ao baixar o vídeo do projeto (conexão com o servidor caiu no meio?)");
-      });
-      if (!vr.ok) throw new Error(`vídeo do projeto respondeu HTTP ${vr.status} (asset faltando no servidor?)`);
-      const blob = await vr.blob().catch(() => {
-        throw new Error(
-          "falha ao carregar o vídeo na memória — vídeo grande + pouco ESPAÇO EM DISCO no C: " +
-          "(o navegador grava o vídeo em disco temporário). Libere alguns GB e tente de novo.",
-        );
-      });
-      const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
       // LUT do projeto → parseia p/ o preview
       if (pf.document.color?.lut?.file) {
         try { const t = await (await fetch(comBase(pf.document.color.lut.file))).text(); setLut(parseCube(t)); setLutName("LUT do projeto"); setLutText(t); }
         catch { setLut(null); setLutName(null); setLutText(null); }
       } else { setLut(null); setLutName(null); setLutText(null); }
-      loadInto(pf, file);
+      // ABRE JÁ, STREAMANDO o vídeo do servidor — sem baixar o arquivo inteiro (era o que levava
+      // minutos). O blob carrega em BACKGROUND (só p/ waveform/export); a edição já está usável.
+      const url = comBase(pf.document.sourceVideo);
+      loadInto(pf, null, url);
+      fetch(url).then((vr) => (vr.ok ? vr.blob() : null)).then((blob) => {
+        if (blob && latest.current.projectId === pf.meta.id) {
+          setVideoFile(new File([blob], "video.mp4", { type: blob.type || "video/mp4" }));
+        }
+      }).catch(() => { /* background: falha no blob não trava a edição (preview segue no stream) */ });
     } catch (e) { setBusy(null); alert("Erro ao abrir projeto: " + (e as Error).message); }
   }
 
@@ -430,7 +431,7 @@ export function App() {
         const pf: ProjectFile = await r.json();
         if (pf.meta.updatedAt <= (L.lastSavedAt ?? 0)) return; // ja estou na versao atual
         if (pf.document.sourceVideo === L.docExtra?.sourceVideo && L.videoFile) {
-          loadInto(pf, L.videoFile); // mesmo video → reusa o blob local (sem re-baixar)
+          loadInto(pf, L.videoFile, L.videoUrl ?? comBase(pf.document.sourceVideo)); // mesmo video → reusa
         } else {
           abrirProjeto(pf.meta.id); // video mudou → recarrega completo
         }
@@ -550,7 +551,7 @@ export function App() {
         <p style={{ color: "var(--muted)", padding: 24 }}>Nenhum projeto aberto. <button onClick={() => setShowProjects(true)}>Abrir projetos</button></p>
       )}
 
-      {videoFile && (
+      {videoUrl && (
         <div ref={bandRef} style={{ display: "flex", gap: 12, padding: 12, alignItems: "stretch", flex: 1, minHeight: 0 }}>
           {/* PREVIEW — janela FIXA: dimensionada pra mostrar tudo, sem rolagem */}
           <div className="preview-col fo-card" style={{
@@ -558,7 +559,7 @@ export function App() {
             background: "var(--panel)", color: "var(--text)", borderRadius: 12, border: "1px solid var(--border)",
             padding: 12,
           }}>
-            <KaraokePreview videoFile={videoFile} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
+            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
               cuts={cuts} onCutsChange={setCuts} captions={captions} onCaptionsChange={setCaptions}
               zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
               chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}
@@ -606,7 +607,7 @@ export function App() {
                   projectId={projectId} flow={flow} onFlowChange={setFlow} onPlacePopups={placeFlowPopups}
                   flowPopups={popups.filter((p) => p.type === "fullscreen" && (p as { flowPhraseId?: string }).flowPhraseId) as FullscreenPopup[]}
                   onPatchFlowPopup={(id, patch) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))}
-                  videoFile={videoFile} onExposeResize={exposeResize} /> ) },
+                  videoFile={videoFile ?? undefined} onExposeResize={exposeResize} /> ) },
               { id: "export", title: "7 · Exportar", startCollapsed: true, node: (
                 <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
                   durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} captions={captions} /> ) },

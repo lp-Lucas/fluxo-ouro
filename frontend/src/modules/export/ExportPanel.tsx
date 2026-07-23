@@ -37,7 +37,7 @@ function capFullHD(w: number, h: number) {
 export function ExportPanel({
   videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, projectId, captions,
 }: {
-  videoFile: File;
+  videoFile: File | null;
   transcript: TranscriptSegment[];
   style: CaptionStyle;
   durationSec: number;
@@ -55,6 +55,7 @@ export function ExportPanel({
   const [state, setState] = useState<State>({ phase: "idle" });
 
   useEffect(() => {
+    if (!videoFile) return;
     const url = URL.createObjectURL(videoFile);
     const v = document.createElement("video");
     v.preload = "metadata";
@@ -63,6 +64,7 @@ export function ExportPanel({
   }, [videoFile]);
 
   async function render() {
+    if (!videoFile) { alert("O vídeo ainda está carregando (abertura em streaming) — aguarde alguns segundos e exporte de novo."); return; }
     setState({ phase: "preparing" });
     const form = new FormData();
     form.append("video", videoFile);

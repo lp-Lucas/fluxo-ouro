@@ -65,3 +65,27 @@ export function remapTimeClamped(t: Seconds, plan: CutPlan): Seconds {
   }
   return plan.outDuration;
 }
+
+/**
+ * INVERSO de remapTime: tempo de SAÍDA (áudio já sem os cortes) → tempo de FONTE.
+ * Usado ao retranscrever o áudio que sobrou: o whisper devolve tempos de saída e a gente
+ * recoloca cada palavra no tempo do vídeo bruto (dentro do trecho mantido correspondente).
+ */
+export function outputToSource(t: Seconds, plan: CutPlan): Seconds {
+  for (const s of plan.segments) {
+    const outEnd = s.outStart + (s.srcEnd - s.srcStart);
+    if (t >= s.outStart && t <= outEnd) return s.srcStart + (t - s.outStart);
+  }
+  const last = plan.segments[plan.segments.length - 1];
+  return last ? last.srcEnd : t;
+}
+
+/** Índice do trecho MANTIDO que contém o tempo de SAÍDA `t` (clamp no último). */
+export function segIndexOfOutput(t: Seconds, plan: CutPlan): number {
+  for (let i = 0; i < plan.segments.length; i++) {
+    const s = plan.segments[i];
+    const outEnd = s.outStart + (s.srcEnd - s.srcStart);
+    if (t >= s.outStart && t <= outEnd) return i;
+  }
+  return Math.max(0, plan.segments.length - 1);
+}

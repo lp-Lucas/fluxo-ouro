@@ -12,6 +12,7 @@ import {
  */
 export function CaptionToolbar({
   transcript, cuts, captions, onCaptionsChange, maxWords = 7, onAnchorToSpeech, anchoring = false,
+  onRetranscribeCut, retranscribing = false,
 }: {
   transcript: TranscriptSegment[];
   cuts: Cut[];
@@ -21,6 +22,9 @@ export function CaptionToolbar({
   /** Alinhamento fino com a fala (re-transcrição no backend) — o App faz a rede. */
   onAnchorToSpeech?: (base: Caption[]) => void;
   anchoring?: boolean;
+  /** Retranscreve SÓ o áudio que sobrou na timeline (pulando os cortes) — o App faz a rede. */
+  onRetranscribeCut?: () => void;
+  retranscribing?: boolean;
 }) {
   const lines = useMemo(
     () => resolveCaptionLines(transcript, cuts, captions, maxWords),
@@ -44,6 +48,13 @@ export function CaptionToolbar({
         <button onClick={() => onAnchorToSpeech(base())} disabled={anchoring} style={capBtnPrimary}
           title="re-ouve o áudio (whisper em janelas curtas) e crava cada palavra no tempo real da fala — o texto não muda; leva ~30s">
           {anchoring ? "⏳ re-ouvindo o áudio…" : "🎯 alinhar com a fala"}
+        </button>
+      )}
+
+      {onRetranscribeCut && cuts.some((c) => c.enabled) && (
+        <button onClick={onRetranscribeCut} disabled={retranscribing} style={capBtnPrimary}
+          title="renderiza SÓ o áudio que sobrou na timeline (pulando os cortes), re-transcreve e reconstrói o roteiro + legendas — conserta legendas bugadas depois de muitos cortes. SUBSTITUI o roteiro atual.">
+          {retranscribing ? "⏳ retranscrevendo…" : "✂️ retranscrever (pulando cortes)"}
         </button>
       )}
 

@@ -24,6 +24,7 @@ import { timeFit } from "./flow/timeFit.js";
 import { saveImageFit, makeStartFrame, renderEntranceClip, runFfmpeg, probeDuration, probeImageDims } from "./flow/ffmpeg.js";
 import { getFlowPreset, aspectDims, identityToPrompt, colorLaw, type FlowAspect, type FlowIdentity } from "../../shared/flow.js";
 import { mixBackgroundMusic } from "./music/mixMusic.js";
+import { flattenAssembly } from "./assembly/flatten.js";
 import {
   listMetas, readProject, createProject, saveProject, renameProject, deleteProject,
   PROJECTS_ROOT, assetFsPath, ProjectConflictError,
@@ -34,8 +35,8 @@ import { comVaga } from "./os-integration/queue.js";
 import { registraExecutores } from "./os-integration/executors.js";
 import { exigeStudioSession } from "./os-integration/auth.js";
 import { ProjectError } from "../../shared/project.js";
-import { buildCutPlan } from "../../shared/cutplan.js";
-import type { Cut, Word, Caption } from "../../shared/timeline.js";
+import { buildCutPlan, outputToSource, segIndexOfOutput, type CutPlan } from "../../shared/cutplan.js";
+import type { Cut, Word, Caption, TranscriptSegment } from "../../shared/timeline.js";
 import { realignCaptionsToWords, buildRealignWindows } from "../../shared/captions.js";
 import { renderDecupadoAudio } from "./decupagem/audio/render.js";
 import { loadMono16k } from "./decupagem/signal/audio.js";
@@ -191,6 +192,63 @@ app.post("/api/transcribe", upload.single("video"), async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: (e as Error).message });
     fs.rm(req.file.path, () => {});
+  }
+});
+
+/**
+ * MONTADOR — ingest de mídia extra (clipes pra pista principal ou b-roll). Só sobe o arquivo
+ * pra uploads/ e devolve a referência + duração/dimensões (a UI usa pra montar o clipe). Vira
+ * asset do projeto ao salvar (dehydrate move de uploads/ p/ assets/).
+ */
+app.post("/api/assembly/media", upload.single("video"), async (req, res) => {
+  if (!req.file) { res.status(400).json({ error: "Nenhum arquivo enviado (campo 'video')." }); return; }
+  try {
+    const [durationSec, dims] = await Promise.all([
+      probeDuration(req.file.path).catch(() => 0),
+      probeImageDims(req.file.path).catch(() => ({ w: 0, h: 0 })),
+    ]);
+    res.json({ asset: req.file.filename, fileName: req.file.originalname, durationSec, width: dims.w, height: dims.h });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+    fs.rm(req.file.path, () => {});
+  }
+});
+
+/**
+ * MONTADOR — "Concluir": ACHATA a montagem num MP4 único (principal concatenada + b-rolls
+ * compostos) e RE-TRANSCREVE. Devolve o vídeo unificado (em uploads/) + a transcrição nova, no
+ * MESMO shape do /api/transcribe. O front troca o sourceVideo/duracao/transcript e salva o
+ * projeto (o que move o MP4 e os clipes pra assets/). NÃO conhece estado — resolve os clipes de
+ * assets/<projectId>/ (persistidos) ou uploads/ (recém-enviados).
+ */
+app.post("/api/assembly/flatten", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      projectId?: string; width?: number; height?: number;
+      assembly?: { main?: Array<{ asset: string; inPoint: number; outPoint: number }>; brolls?: Array<{ asset: string; inPoint: number; outPoint: number; timelineStart: number }> };
+    };
+    const main = body.assembly?.main ?? [];
+    if (!main.length) { res.status(400).json({ error: "A pista principal precisa de ao menos um clipe." }); return; }
+    const w = Math.max(2, Math.round(Number(body.width) || 1080));
+    const h = Math.max(2, Math.round(Number(body.height) || 1920));
+    const resolve = (asset: string): string => {
+      const name = String(asset).replace(/.*\//, ""); // aceita URL hidratada ou bare
+      if (body.projectId) { const a = assetFsPath(String(body.projectId), name); if (fs.existsSync(a)) return a; }
+      const u = path.join(UPLOAD_DIR, name);
+      if (fs.existsSync(u)) return u;
+      throw new Error(`Clipe não encontrado: ${name}`);
+    };
+    const mainF = main.map((c) => ({ path: resolve(c.asset), in: Number(c.inPoint) || 0, out: Number(c.outPoint) || 0 }));
+    const brollF = (body.assembly?.brolls ?? []).map((b) => ({ path: resolve(b.asset), in: Number(b.inPoint) || 0, out: Number(b.outPoint) || 0, timelineStart: Number(b.timelineStart) || 0 }));
+
+    const outName = `flat-${crypto.randomUUID()}.mp4`;
+    const outPath = path.join(UPLOAD_DIR, outName);
+    const { durationSec } = await flattenAssembly(mainF, brollF, w, h, outPath);
+    const result = await runTranscription(outPath);
+    // ...result primeiro: os campos abaixo (source unificado) SEMPRE mandam sobre a transcrição.
+    res.json({ ...result, videoFile: outName, fileName: outName, durationSec, width: w, height: h });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
   }
 });
 
@@ -847,6 +905,73 @@ app.post("/api/realign-captions", async (req, res) => {
   } catch (e) {
     console.error("[REALINHAR] erro:", e);
     res.status(500).json({ error: (e as Error).message || "Falha ao alinhar as legendas" });
+  }
+});
+
+/**
+ * Recoloca no tempo de FONTE um transcript feito sobre o áudio JÁ SEM os cortes (tempo de
+ * saída). Agrupa as palavras por trecho mantido: se uma palavra do whisper cair na emenda de
+ * dois trechos (raro), ela e as seguintes viram um segmento NOVO — assim nenhuma linha de
+ * legenda atravessa um corte (era o bug que o usuário via).
+ */
+function mapTranscriptOutputToSource(segs: TranscriptSegment[], plan: CutPlan): TranscriptSegment[] {
+  const out: TranscriptSegment[] = [];
+  const clampN = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+  let sid = 0;
+  for (const seg of segs) {
+    let cur: Word[] = [];
+    let curIdx = -1;
+    const flush = () => {
+      if (!cur.length) return;
+      out.push({ id: `rt${sid++}`, start: cur[0].start, end: cur[cur.length - 1].end, text: cur.map((w) => w.text).join(" ").trim(), words: cur, source: "whisper" });
+      cur = [];
+    };
+    for (const w of seg.words ?? []) {
+      const idx = segIndexOfOutput((w.start + w.end) / 2, plan);
+      const sSeg = plan.segments[idx];
+      const ss = clampN(outputToSource(w.start, plan), sSeg.srcStart, sSeg.srcEnd);
+      const se = clampN(outputToSource(w.end, plan), sSeg.srcStart, sSeg.srcEnd);
+      if (idx !== curIdx) { flush(); curIdx = idx; }
+      cur.push({ ...w, start: ss, end: Math.max(ss + 0.02, se) });
+    }
+    flush();
+  }
+  return out;
+}
+
+/**
+ * RETRANSCREVER PULANDO OS CORTES: renderiza SÓ o áudio dos trechos mantidos na timeline
+ * (concat limpo, sem crossfade), transcreve, e recoloca cada palavra no tempo de fonte. É a
+ * forma limpa de reconstruir as legendas depois de muitos cortes — sem os bugs de remapear
+ * palavras que a borda de um corte atravessava. O front troca o roteiro e re-deriva a legenda.
+ */
+app.post("/api/retranscribe-cut", async (req, res) => {
+  try {
+    const { projectId, cuts, durationSec } = req.body ?? {};
+    if (!projectId) { res.status(400).json({ error: "projectId ausente." }); return; }
+    const pf = readProject(String(projectId));
+    const file = String(pf.document.sourceVideo).replace(/.*\//, "");
+    const video = assetFsPath(String(projectId), file);
+    if (!fs.existsSync(video)) { res.status(404).json({ error: "Vídeo fonte do projeto não encontrado." }); return; }
+    const dur = Number(durationSec) || Number(pf.document.durationSec) || 0;
+    const plan = buildCutPlan(dur, (Array.isArray(cuts) ? cuts : []) as Cut[]);
+    if (!plan.segments.length || plan.outDuration < 0.2) { res.status(400).json({ error: "Não sobrou áudio suficiente após os cortes." }); return; }
+
+    // Extrai SÓ o áudio dos trechos mantidos, concat LIMPO (sem crossfade — bordas de palavra
+    // nítidas p/ o whisper), mono 16k (o modelo espera 16k).
+    const outWav = path.join(OUT_DIR, `retrans-${String(projectId)}-${Date.now().toString(36)}.wav`);
+    const trims = plan.segments.map((s, i) => `[0:a]atrim=start=${s.srcStart.toFixed(6)}:end=${s.srcEnd.toFixed(6)},asetpts=PTS-STARTPTS[a${i}]`);
+    const concat = plan.segments.map((_, i) => `[a${i}]`).join("") + `concat=n=${plan.segments.length}:v=0:a=1[out]`;
+    await runFfmpeg(["-y", "-i", video, "-filter_complex", `${trims.join(";")};${concat}`, "-map", "[out]", "-ac", "1", "-ar", "16000", outWav], undefined, "retranscribe-cut");
+
+    const fresh = await runTranscription(outWav);
+    fs.rm(outWav, () => {});
+    const transcript = mapTranscriptOutputToSource((fresh.transcript ?? []) as TranscriptSegment[], plan);
+    console.log(`[RETRANSCREVER] ${plan.segments.length} trecho(s), ${plan.outDuration.toFixed(1)}s de áudio → ${transcript.length} segmento(s)`);
+    res.json({ transcript, durationSec: dur });
+  } catch (e) {
+    console.error("[RETRANSCREVER] erro:", e);
+    res.status(500).json({ error: (e as Error).message || "Falha ao retranscrever pulando os cortes" });
   }
 });
 

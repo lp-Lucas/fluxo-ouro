@@ -24,6 +24,8 @@ import { CutTimeline } from "./modules/editor/CutTimeline";
 import { TransportBus, type TransportState } from "./workspace/transport";
 import { useHistory } from "./history/useHistory";
 import { getClienteSlug, comBase } from "./os-session";
+import { AssemblyEditor } from "./modules/assembly/AssemblyEditor";
+import type { Assembly } from "../../shared/assembly";
 
 /** Parte do documento coberta por undo/redo. */
 interface Doc {
@@ -74,6 +76,8 @@ export function App() {
   const [projectName, setProjectName] = useState("");
   const [docExtra, setDocExtra] = useState<DocExtra | null>(null);
   const [showProjects, setShowProjects] = useState(true);
+  const [assembly, setAssembly] = useState<Assembly | undefined>(undefined); // Montador de origem
+  const [showAssembly, setShowAssembly] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("salvo");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
@@ -123,6 +127,7 @@ export function App() {
   const [eyedropper, setEyedropper] = useState(false); // conta-gotas (chroma)
   const [showMask, setShowMask] = useState(false);      // ver máscara (chroma)
   const [anchoring, setAnchoring] = useState(false);    // alinhamento fino em andamento
+  const [retranscribing, setRetranscribing] = useState(false); // retranscrição pulando cortes
 
   /**
    * Alinhamento FINO: o backend re-transcreve cada trecho de fala em janela curta
@@ -149,6 +154,31 @@ export function App() {
       alert("Erro ao alinhar: " + (e as Error).message);
     } finally { setAnchoring(false); }
   }
+
+  /**
+   * RETRANSCREVER PULANDO OS CORTES: o backend renderiza só o áudio dos trechos mantidos na
+   * timeline, transcreve e devolve o roteiro já no tempo de fonte. Troca o roteiro e LIMPA as
+   * legendas materializadas (elas re-derivam do roteiro novo) — resolve legendas bugadas
+   * depois de muitos cortes, sem palavra atravessando a borda de um corte.
+   */
+  async function retranscreverPulandoCortes() {
+    if (!projectId) { alert("Salve o projeto antes (a transcrição lê o vídeo do projeto no servidor)."); return; }
+    if (!confirm("Retranscrever só o áudio que sobrou na timeline (pulando os cortes)?\n\nIsso SUBSTITUI o roteiro atual e reconstrói as legendas. Os ajustes manuais de texto/tempo serão perdidos.")) return;
+    setRetranscribing(true);
+    try {
+      const r = await fetch(comBase("/api/retranscribe-cut"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, cuts, durationSec: docExtra?.durationSec }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Falha ao retranscrever");
+      const tr = ensureWordIds(data.transcript as TranscriptSegment[]);
+      // roteiro novo (tempo de fonte) + legendas zeradas → re-derivam limpas do roteiro.
+      setDoc((d) => ({ ...d, transcript: tr, captions: [] }));
+    } catch (e) {
+      alert("Erro ao retranscrever: " + (e as Error).message);
+    } finally { setRetranscribing(false); }
+  }
   // Ponte preview ↔ timeline fixa (barra inferior) — um objeto estável por sessão.
   const transport = useRef(new TransportBus()).current;
 
@@ -171,8 +201,8 @@ export function App() {
   const effectiveColor = colorEnabled ? color : DEFAULT_COLOR;
 
   // refs sempre atuais (para autosave/reload-ao-focar lerem sem closure obsoleta)
-  const latest = useRef({ doc, docExtra, projectId, lastSavedAt, saveState, videoFile });
-  latest.current = { doc, docExtra, projectId, lastSavedAt, saveState, videoFile };
+  const latest = useRef({ doc, docExtra, projectId, lastSavedAt, saveState, videoFile, assembly });
+  latest.current = { doc, docExtra, projectId, lastSavedAt, saveState, videoFile, assembly };
 
   // ───────── LUT (igual antes) ─────────
   async function loadLutFromText(text: string, name: string, intensity: number, colorForLut: ColorSettings) {
@@ -209,6 +239,7 @@ export function App() {
   function loadInto(pf: ProjectFile, file: File) {
     const d = pf.document;
     setDocExtra({ sourceVideo: d.sourceVideo, durationSec: d.durationSec, width: d.width, height: d.height });
+    setAssembly(d.assembly);
     // Garante id em cada palavra e migra legendas antigas (sem id) para o novo esquema —
     // assim a sincronização de texto passa a valer também em projetos já legendados.
     const tr = ensureWordIds(d.transcript);
@@ -279,7 +310,7 @@ export function App() {
 
   const buildDoc = (): EditorDocument => {
     const { doc: d, docExtra: e } = latest.current;
-    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, captions: d.captions, copy: d.copy };
+    return { ...(e as DocExtra), transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captionStyle: d.captionStyle, color: d.color, chroma: d.chroma, flow: d.flow, music: d.music, captions: d.captions, assembly: latest.current.assembly, copy: d.copy };
   };
 
   const salvar = useCallback(async () => {
@@ -302,6 +333,29 @@ export function App() {
       setSaveState("salvo"); setLastSavedAt(pf.meta.updatedAt);
     } catch { setSaveState("erro"); }
   }, []);
+
+  /**
+   * MONTADOR concluído: o backend uniu tudo num MP4 novo e re-transcreveu. Troca o source +
+   * transcrição, RESETA o que era cronometrado no vídeo antigo (cortes/zooms/popups/legendas/
+   * FLOW) e salva. Mantém copy/cor/chroma/música (não dependem do tempo do source).
+   */
+  async function onAssemblyConcluir(result: { videoFile: string; durationSec: number; width: number; height: number; transcript: unknown }, asm: Assembly) {
+    setShowAssembly(false);
+    setBusy("Aplicando o novo vídeo…");
+    try {
+      const vr = await fetch(comBase(`/uploads/${result.videoFile}`));
+      const blob = await vr.blob();
+      const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
+      const d = latest.current.doc;
+      setDocExtra({ sourceVideo: result.videoFile, durationSec: result.durationSec, width: result.width, height: result.height });
+      setAssembly(asm);
+      reset({ transcript: ensureWordIds(result.transcript as TranscriptSegment[]), cuts: [], zooms: [], popups: [], captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, flow: undefined, music: d.music, captions: [] });
+      setVideoFile(file);
+      setLut(null); setLutName(null); setLutText(null);
+      setBusy(null);
+      setTimeout(() => salvar(), 200); // persiste (move o MP4 + clipes pra assets/)
+    } catch (e) { setBusy(null); alert("Erro ao aplicar o novo vídeo: " + (e as Error).message); }
+  }
 
   // Marca "não salvo" quando o documento muda (após ter um projeto aberto).
   useEffect(() => {
@@ -419,6 +473,12 @@ export function App() {
 
       {showProjects && <ProjectsModal onOpen={abrirProjeto} onCreate={criarProjeto} busy={busy} />}
 
+      {showAssembly && projectId && docExtra && (
+        <AssemblyEditor projectId={projectId} width={docExtra.width} height={docExtra.height}
+          sourceVideoUrl={docExtra.sourceVideo} sourceDurationSec={docExtra.durationSec}
+          initial={assembly} onConclude={onAssemblyConcluir} onClose={() => setShowAssembly(false)} />
+      )}
+
       {/* BARRA SUPERIOR — projeto, salvar, undo/redo. Compacta, sem poluição. */}
       <div style={{
         display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
@@ -452,6 +512,7 @@ export function App() {
         {projectId && (
           <>
             <button onClick={salvar} style={topBtn}>Salvar</button>
+            {videoFile && <button onClick={() => setShowAssembly(true)} style={topBtn} title="Unir vídeos e b-rolls (Montador de origem)">Montador</button>}
             <button onClick={() => { if (confirmarDescartar()) setShowProjects(true); }} style={topBtn}>Projetos</button>
           </>
         )}
@@ -486,7 +547,8 @@ export function App() {
                   </div>
                   {/* Ferramentas de TEMPO das legendas (alinhar com a fala, ±50ms, avisos) */}
                   <CaptionToolbar transcript={transcript} cuts={cuts} captions={captions} onCaptionsChange={setCaptions}
-                    maxWords={captionStyle.maxWords} onAnchorToSpeech={realinharLegendas} anchoring={anchoring} />
+                    maxWords={captionStyle.maxWords} onAnchorToSpeech={realinharLegendas} anchoring={anchoring}
+                    onRetranscribeCut={retranscreverPulandoCortes} retranscribing={retranscribing} />
                   {/* Estilo das legendas — recolhível, pra transcrição reinar na altura */}
                   <details style={{ flexShrink: 0, borderTop: "1px solid var(--border)", marginTop: 12, paddingTop: 8 }}>
                     <summary style={{ fontSize: 13, fontWeight: 600, color: "var(--text)", cursor: "pointer", userSelect: "none" }}>
@@ -530,7 +592,9 @@ export function App() {
         <div style={{ flex: "0 0 auto", background: "var(--panel)", borderTop: "1px solid var(--border)", padding: "8px 16px 12px" }}>
           <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
             words={transcript.flatMap((s) => s.words)}
-            captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords} />
+            captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
+            motions={popups.filter((p): p is FullscreenPopup => p.type === "fullscreen").map((p) => ({ id: p.id, at: p.at, label: p.placeholder?.label }))}
+            onMotionMove={(id, at) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, at } : p)))} />
         </div>
       )}
     </main>
@@ -539,9 +603,10 @@ export function App() {
 
 /** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
  *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
-function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords }: {
+function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motions, onMotionMove }: {
   bus: TransportBus; videoFile: File; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
   captions: Caption[]; onCaptionsChange: (c: Caption[]) => void; transcript: TranscriptSegment[]; maxWords?: number;
+  motions: { id: string; at: number; label?: string }[]; onMotionMove: (id: string, at: number) => void;
 }) {
   const [meta, setMeta] = useState({ duration: bus.state.duration, playing: bus.state.playing });
   useEffect(() => bus.subscribe((s: TransportState) => {
@@ -556,7 +621,8 @@ function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onC
   return (
     <CutTimeline videoFile={videoFile} duration={meta.duration} cuts={cuts} onCutsChange={onCutsChange}
       words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing}
-      captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords} />
+      captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords}
+      motions={motions} onMotionMove={onMotionMove} />
   );
 }
 

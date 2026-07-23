@@ -13,9 +13,10 @@ import type { ChromaSettings } from "./chroma.js";
 import { DEFAULT_CHROMA } from "./chroma.js";
 import type { FlowState } from "./flow.js";
 import type { Music } from "./timeline.js";
+import type { Assembly } from "./assembly.js";
 
 /** Versão atual do schema de projeto. Incrementar a cada mudança que exija migração. */
-export const SCHEMA_VERSION = 5; // v5: adiciona `captions` (legendas materializadas) — opcional
+export const SCHEMA_VERSION = 6; // v6: adiciona `assembly` (Montador de origem) — opcional
 
 /**
  * Documento do editor (estado persistido). As referências de asset são strings:
@@ -43,6 +44,12 @@ export interface EditorDocument {
    * são derivadas da transcrição, como sempre. Preenchido = mandam sobre a derivação.
    */
   captions?: Caption[];
+  /**
+   * MONTADOR de origem (multipista) — a receita das filmagens que foram unidas pra formar o
+   * `sourceVideo`. Ausente/undefined = projeto sem montagem (source veio de um upload único,
+   * como sempre). Reabrir o Montador reidrata daqui. Ver shared/assembly.ts.
+   */
+  assembly?: Assembly;
   copy: string;
 }
 
@@ -115,6 +122,11 @@ export function migrateProject(raw: unknown): ProjectFile {
         // derivando da transcrição — projeto antigo abre idêntico ao que era.
         (file.document as { captions?: Caption[] }).captions ??= [];
         v = 5;
+        break;
+      case 5:
+        // v5 → v6: adiciona `assembly` (Montador de origem). Ausente = sem montagem; o
+        // projeto abre idêntico (source veio de upload único). Nada a preencher.
+        v = 6;
         break;
       default:
         throw new ProjectError(`Não há migração definida a partir da versão ${v}.`);

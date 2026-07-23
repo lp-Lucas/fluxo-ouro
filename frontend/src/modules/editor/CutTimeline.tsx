@@ -5,6 +5,7 @@ import {
   lineText, captionFromText, distributeWords, needsTimingRepair, type CaptionLine,
 } from "../../../../shared/captions";
 import { capBar, capChip, capBtnMuted, capGroup, capGroupBtn, capGroupSep, capGroupLabel } from "../legenda/CaptionToolbar";
+import { comBase } from "../../os-session";
 
 /**
  * Timeline visual de cortes com forma de onda do áudio + ZOOM.
@@ -25,6 +26,7 @@ import { capBar, capChip, capBtnMuted, capGroup, capGroupBtn, capGroupSep, capGr
 const RULER = 20;              // régua de tempo (topo)
 const WAVE = 64;               // faixa da onda
 const CAPS = 38;               // faixa das legendas (0 quando a camada está desligada)
+const MOT = 52;                // faixa dos MOTIONS do FLOW (0 quando não há motion)
 const EDGE_PX = 7;
 const HANDLE_MS = 4;
 const ZMIN = 1, ZMAX = 60;
@@ -47,6 +49,12 @@ const COL = {
   capFillLocked: "rgba(96, 150, 255, 0.38)", // ajustada à mão = mais sólida
   capSel: "#8ab4ff",
   capText: "#e9efff",
+  // camada de MOTIONS (roxo do FLOW)
+  motBg: "#171717",
+  motFill: "rgba(179, 163, 207, 0.22)",
+  motStroke: "rgba(179, 163, 207, 0.5)",
+  motSel: "#cbbdea",
+  motText: "#efeaf7",
 };
 
 /** Passo "bonito" da régua conforme o zoom (px por segundo). */
@@ -96,6 +104,7 @@ type Drag =
   | { kind: "move"; id: string; grabT: number }
   | { kind: "create"; t0: number }
   | { kind: "seekMaybe"; downX: number; t: number }
+  | { kind: "scrub" }
   | { kind: "capEdge"; id: string; side: "start" | "end" }
   | { kind: "capMove"; id: string; grabT: number }
   | { kind: "capCreate"; t0: number }
@@ -104,7 +113,7 @@ type Drag =
 
 export function CutTimeline({
   videoFile, duration, cuts, onCutsChange, words, currentTime = 0, clock, onSeek, onPlayKept, playing,
-  captions, onCaptionsChange, transcript, maxWords = 7,
+  captions, onCaptionsChange, transcript, maxWords = 7, motionGroups, onMotionMove, onClipResize,
 }: {
   videoFile: File;
   duration: number;
@@ -123,11 +132,20 @@ export function CutTimeline({
   onCaptionsChange?: (c: Caption[]) => void;
   transcript?: TranscriptSegment[];
   maxWords?: number;
+  /** MOTIONS do FLOW — cada motion é um GRUPO com seus clipes (frases) em sequência. */
+  motionGroups?: { id: string; at: number; clips: { phraseId: string; duration: number; label?: string; raw?: number; video?: string }[] }[];
+  /** move o grupo inteiro (novo `at`). Sem isto, a camada não aparece. */
+  onMotionMove?: (id: string, at: number) => void;
+  /** redimensiona um clipe do grupo (nova duração de tela → re-fit no FLOW). */
+  onClipResize?: (phraseId: string, duration: number) => void;
 }) {
   const capsOn = !!onCaptionsChange && !!transcript;
   const capH = capsOn ? CAPS : 0;
   const CAP_TOP = RULER + WAVE;
-  const H = RULER + WAVE + capH;
+  const motOn = !!onMotionMove && !!motionGroups && motionGroups.length > 0;
+  const motH = motOn ? MOT : 0;
+  const MOT_TOP = RULER + WAVE + capH;   // faixa dos motions logo abaixo das legendas
+  const H = RULER + WAVE + capH + motH;
   const buckets = Math.min(6000, Math.max(800, Math.round(duration * 50)));
   const peaks = useWaveform(videoFile, buckets);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -137,6 +155,12 @@ export function CutTimeline({
   const [zoom, setZoom] = useState(1);
   const [sel, setSel] = useState<string | null>(null);
   const [capSel, setCapSel] = useState<string | null>(null);
+  // FERRAMENTA DE RECORTE: ligada = arrastar no vazio cria/edita cortes (comportamento antigo).
+  // Desligada (padrão) = arrastar move a AGULHA (scrub), como no Montador — timeline p/ navegar.
+  const [recorte, setRecorte] = useState(false);
+  const [motSel, setMotSel] = useState<string | null>(null);
+  const [liveDur, setLiveDur] = useState<Record<string, number>>({}); // duração viva por clipe durante o resize
+  useEffect(() => { setLiveDur({}); }, [motionGroups]); // reset quando os grupos mudam (re-fit aplicado)
   const drag = useRef<Drag>(null);
   const [tempCut, setTempCut] = useState<{ start: number; end: number } | null>(null);
   const [tempCap, setTempCap] = useState<{ start: number; end: number } | null>(null);
@@ -185,6 +209,50 @@ export function CutTimeline({
     for (const b of bounds) { const d = Math.abs(b - t); if (d < bd) { bd = d; best = b; } }
     return Math.max(0, Math.min(duration, +best.toFixed(3)));
   }
+
+  // MOTIONS: duração viva (durante o resize) + segmentos absolutos de cada clipe do grupo.
+  const clipDur = (c: { phraseId: string; duration: number }) => liveDur[c.phraseId] ?? c.duration;
+  const groupSegs = (grp: { at: number; clips: { phraseId: string; duration: number; label?: string; raw?: number; video?: string }[] }) => {
+    let off = grp.at;
+    return grp.clips.map((c) => { const d = clipDur(c); const seg = { ...c, start: off, end: off + d, dur: d }; off += d; return seg; });
+  };
+  const groupEnd = (grp: { at: number; clips: { phraseId: string; duration: number }[] }) => grp.at + grp.clips.reduce((a, c) => a + clipDur(c), 0);
+
+  // DRAG dos clipes de motion (DOM): corpo = mover o grupo (at); borda direita = velocidade do clipe.
+  const motPtr = useRef<
+    | { kind: "move"; groupId: string; at0: number; total: number; startX: number }
+    | { kind: "resize"; phraseId: string; startX: number; startDur: number }
+    | null
+  >(null);
+  const startMotionMove = (e: React.PointerEvent, groupId: string, at: number, total: number) => {
+    e.preventDefault(); e.stopPropagation(); setMotSel(groupId);
+    motPtr.current = { kind: "move", groupId, at0: at, total, startX: e.clientX };
+  };
+  const startMotionResize = (e: React.PointerEvent, phraseId: string, startDur: number) => {
+    e.preventDefault(); e.stopPropagation();
+    motPtr.current = { kind: "resize", phraseId, startX: e.clientX, startDur };
+  };
+  useEffect(() => {
+    const pps = cw / Math.max(0.001, duration);
+    const mv = (e: PointerEvent) => {
+      const d = motPtr.current; if (!d) return;
+      const dt = (e.clientX - d.startX) / pps;
+      if (d.kind === "move") {
+        let ns = snap(d.at0 + dt);
+        if (ns < 0) ns = 0; if (ns + d.total > duration) ns = Math.max(0, duration - d.total);
+        onMotionMove?.(d.groupId, +ns.toFixed(3));
+      } else {
+        setLiveDur((prev) => ({ ...prev, [d.phraseId]: Math.max(0.5, Math.min(30, +(d.startDur + dt).toFixed(1))) }));
+      }
+    };
+    const up = () => {
+      const d = motPtr.current; motPtr.current = null;
+      if (d?.kind === "resize") { const nd = liveDur[d.phraseId] ?? d.startDur; if (onClipResize && Math.abs(nd - d.startDur) > 0.05) onClipResize(d.phraseId, nd); }
+    };
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+    return () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cw, duration, onMotionMove, onClipResize, liveDur]);
 
   // Zoom mantendo o tempo sob o cursor (ou o centro) estável.
   function applyZoom(nz: number, anchorClientX?: number) {
@@ -313,9 +381,15 @@ export function CutTimeline({
         g.fill();
       }
     }
+
+    // ── faixa dos MOTIONS (só o fundo): os clipes são <div> DOM por cima (preview + duração + ×velocidade) ──
+    if (motOn) {
+      g.fillStyle = COL.motBg; g.fillRect(0, MOT_TOP, cw, motH);
+      g.fillStyle = COL.tick; g.fillRect(0, MOT_TOP, cw, 1);
+    }
     // O playhead NÃO é desenhado aqui: ele é um <div> leve (senão a onda inteira
     // seria redesenhada a cada frame → travava o preview a ~10fps).
-  }, [peaks, cuts, sel, cw, duration, tempCut, capsOn, capH, CAP_TOP, H, lines, capSel, tempCap]);
+  }, [peaks, cuts, sel, cw, duration, tempCut, capsOn, capH, CAP_TOP, H, lines, capSel, tempCap, motOn, motH, MOT_TOP]);
 
   // Mantém o playhead à vista durante o play (modo legado, sem clock).
   useEffect(() => {
@@ -387,9 +461,13 @@ export function CutTimeline({
   function onDown(e: React.PointerEvent) {
     wrapRef.current!.setPointerCapture(e.pointerId);
     const x = localX(e);
+    const y = localY(e);
 
-    // Faixa de baixo = legendas. A régua e a onda seguem sendo dos cortes.
-    if (capsOn && localY(e) >= CAP_TOP) {
+    // Faixa de MOTIONS: os clipes são <div> DOM (tratam move/resize). Aqui só o VAZIO = busca.
+    if (motOn && y >= MOT_TOP) { setMotSel(null); drag.current = { kind: "scrub" }; onSeek(snap(xToT(x))); return; }
+
+    // Faixa das legendas (entre a onda e os motions). A régua e a onda seguem sendo dos cortes.
+    if (capsOn && y >= CAP_TOP && y < MOT_TOP) {
       const ce = hitCapEdge(x);
       if (ce) { setCapSel(ce.id); drag.current = { kind: "capEdge", ...ce }; return; }
       const cb = hitCapBody(x);
@@ -398,6 +476,8 @@ export function CutTimeline({
       return;
     }
 
+    // RECORTE desligado: arrastar = mover a agulha (scrub), como no Montador. Não cria/edita cortes.
+    if (!recorte) { drag.current = { kind: "scrub" }; onSeek(snap(xToT(x))); return; }
     const edge = hitEdge(x);
     if (edge) { setSel(edge.id); drag.current = { kind: "edge", ...edge }; return; }
     const body = hitBody(x);
@@ -408,6 +488,7 @@ export function CutTimeline({
   function onMove(e: React.PointerEvent) {
     const d = drag.current; if (!d) return;
     const x = localX(e);
+    if (d.kind === "scrub") { onSeek(snap(xToT(x))); return; }
     const t = snap(xToT(x));
     if (d.kind === "seekMaybe") {
       if (Math.abs(x - d.downX) > HANDLE_MS) { drag.current = { kind: "create", t0: d.t }; setTempCut({ start: d.t, end: d.t }); }
@@ -470,6 +551,7 @@ export function CutTimeline({
     const d = drag.current; drag.current = null;
     try { wrapRef.current!.releasePointerCapture(e.pointerId); } catch { /* já solto */ }
     if (!d) return;
+    if (d.kind === "scrub") return; // já buscou durante o arrasto
     if (d.kind === "seekMaybe") { onSeek(snap(d.t)); return; }
     if (d.kind === "capSeekMaybe") { setCapSel(null); onSeek(snap(d.t)); return; }
     if (d.kind === "capCreate" && tempCap) {
@@ -497,6 +579,18 @@ export function CutTimeline({
   function onWheel(e: React.WheelEvent) {
     const sc = scrollRef.current; if (!sc) return;
     if (e.shiftKey && e.deltaY) sc.scrollLeft += e.deltaY;
+  }
+
+  // Setas ◀ ▶ navegam a agulha (frame a frame; Shift = 1s) e mantêm à vista. Só quando a
+  // timeline está focada (após clicar nela) — não sequestra as setas do resto do app.
+  function onKeyNav(e: React.KeyboardEvent) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const step = e.shiftKey ? 1 : 1 / 30;
+    const cur = clock ? clock.time : currentTime;
+    const nt = Math.max(0, Math.min(duration, +(cur + (e.key === "ArrowRight" ? step : -step)).toFixed(3)));
+    onSeek(nt);
+    const sc = scrollRef.current; if (sc) { const px = tToX(nt); if (px < sc.scrollLeft + 30 || px > sc.scrollLeft + vw - 30) sc.scrollLeft = Math.max(0, px - vw * 0.3); }
   }
 
   const selCut = cuts.find((c) => c.id === sel) ?? null;
@@ -558,14 +652,15 @@ export function CutTimeline({
           : "arraste no vazio p/ criar corte · shift+scroll rola"}
         style={{ width: "100%", overflowX: "auto", overflowY: "hidden", borderRadius: 12, border: "1px solid var(--border)" }}>
         <div ref={wrapRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp}
-          style={{ position: "relative", width: cw, height: H, cursor: "pointer", userSelect: "none", touchAction: "none" }}>
+          tabIndex={0} onKeyDown={onKeyNav}
+          style={{ position: "relative", width: cw, height: H, cursor: recorte ? "crosshair" : "ew-resize", userSelect: "none", touchAction: "none", outline: "none" }}>
           <canvas ref={canvasRef} style={{ width: cw, height: H, display: "block" }} />
           {/* Playhead: div leve movido por transform (não redesenha o canvas). Com clock,
               o movimento é por DOM direto (P1); sem clock, via prop currentTime (legado). */}
           <div ref={playheadRef} style={{ position: "absolute", top: 0, left: 0, height: H, pointerEvents: "none", willChange: "transform",
             transform: `translateX(${tToX(clock ? clock.time : currentTime).toFixed(1)}px)` }}>
             {/* atravessa a onda E a faixa de legendas: é a referência p/ dividir no ponto certo */}
-            <div style={{ position: "absolute", top: RULER, left: -0.75, width: 1.5, height: WAVE + capH, background: "#eceef6" }} />
+            <div style={{ position: "absolute", top: RULER, left: -0.75, width: 1.5, height: WAVE + capH + motH, background: "#eceef6" }} />
             {/* badge flutuante com o tempo atual (estilo referência) */}
             <div ref={badgeRef} style={{ position: "absolute", top: 1, left: 0, transform: "translateX(-50%)",
               background: "#0a0a0e", border: "1px solid var(--border)", borderRadius: 8,
@@ -573,6 +668,33 @@ export function CutTimeline({
               {(clock ? clock.time : currentTime).toFixed(2)}
             </div>
           </div>
+
+          {/* CLIPES de MOTION (DOM) — mesmo visual do editor do FLOW: preview + duração + ×velocidade */}
+          {motOn && motionGroups!.flatMap((grp) => {
+            const total = groupEnd(grp) - grp.at;
+            return groupSegs(grp).map((seg) => {
+              const left = tToX(seg.start), w = Math.max(18, tToX(seg.end) - tToX(seg.start));
+              const raw = seg.raw ?? seg.dur, speed = raw / Math.max(0.1, seg.dur), fast = speed > 1.5 || speed < 0.7;
+              return (
+                <div key={seg.phraseId} onPointerDown={(e) => startMotionMove(e, grp.id, grp.at, total)}
+                  title={`${seg.label ?? "clipe"} · ${seg.dur.toFixed(1)}s ×${speed.toFixed(2)} — corpo move o motion, borda muda a velocidade`}
+                  style={{ position: "absolute", top: MOT_TOP + 6, height: MOT - 12, left, width: w,
+                    background: "var(--active-grad)", border: "1px solid var(--border-active)", borderRadius: 7,
+                    boxShadow: "var(--shadow-active)", overflow: "hidden", cursor: "grab", zIndex: 4 }}>
+                  {seg.video && <video src={comBase(seg.video)} muted preload="metadata"
+                    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.4, pointerEvents: "none" }} />}
+                  <span style={{ position: "absolute", left: 6, top: 4, fontSize: 10, color: "var(--text)", fontWeight: 600, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>{seg.dur.toFixed(1)}s</span>
+                  <span style={{ position: "absolute", left: 6, bottom: 3, fontSize: 9, color: fast ? "#ffb0b0" : "var(--faint)", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>×{speed.toFixed(2)}</span>
+                  {onClipResize && (
+                    <div onPointerDown={(e) => startMotionResize(e, seg.phraseId, seg.dur)}
+                      style={{ position: "absolute", top: 0, bottom: 0, right: 0, width: 12, cursor: "ew-resize", display: "grid", placeItems: "center" }}>
+                      <span style={{ width: 3, height: "55%", borderRadius: 2, background: "var(--accent)" }} />
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })}
         </div>
       </div>
 
@@ -586,6 +708,12 @@ export function CutTimeline({
         <span ref={clockLabelRef} style={{ fontSize: 13, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
           {fmt(clock ? clock.time : currentTime)} / {fmt(duration)}
         </span>
+        <button onClick={() => setRecorte((v) => !v)}
+          title="Recorte LIGADO: arraste no vazio p/ criar cortes e edite os blocos. DESLIGADO: arraste p/ mover a agulha (navegar); as setas ◀▶ também navegam (Shift = 1s)."
+          style={{ height: 30, padding: "0 12px", borderRadius: 8, fontSize: 13, cursor: "pointer", border: "1px solid var(--border)",
+            background: recorte ? "var(--accent)" : "var(--panel3)", color: recorte ? "#141414" : "var(--text)", fontWeight: recorte ? 600 : 400 }}>
+          ✂ Recorte
+        </button>
         <span style={{ flex: 1 }} />
         <button onClick={() => applyZoom(zoom / 1.5)} disabled={zoom <= ZMIN} style={zoomBtn}>−</button>
         <input type="range" min={ZMIN} max={ZMAX} step={0.5} value={zoom}

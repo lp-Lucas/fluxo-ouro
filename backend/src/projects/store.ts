@@ -136,6 +136,10 @@ function dehydrateAssets(id: string, doc: EditorDocument): EditorDocument {
   d.sourceVideo = dehydrateRef(id, d.sourceVideo) ?? "";
   if (d.color?.lut?.file) d.color.lut.file = dehydrateRef(id, d.color.lut.file) ?? null;
   if (d.music?.file) d.music.file = dehydrateRef(id, d.music.file) ?? d.music.file;
+  if (d.assembly) { // MONTADOR: move os clipes (principal + b-roll) de uploads/ p/ assets/
+    for (const c of d.assembly.main) c.asset = dehydrateRef(id, c.asset) ?? c.asset;
+    for (const b of d.assembly.brolls) b.asset = dehydrateRef(id, b.asset) ?? b.asset;
+  }
   mapFlowRefs(d, dehydrateFlowRef); // FLOW: URL absoluta → "flow/<arquivo>"
   return d;
 }
@@ -146,6 +150,10 @@ function hydrateAssets(id: string, doc: EditorDocument): EditorDocument {
   if (d.sourceVideo) d.sourceVideo = assetUrl(id, d.sourceVideo);
   if (d.color?.lut?.file) d.color.lut.file = assetUrl(id, d.color.lut.file);
   if (d.music?.file) d.music.file = assetUrl(id, d.music.file);
+  if (d.assembly) { // MONTADOR: refs de clipe (bare) → URLs servidas
+    for (const c of d.assembly.main) if (c.asset) c.asset = assetUrl(id, c.asset);
+    for (const b of d.assembly.brolls) if (b.asset) b.asset = assetUrl(id, b.asset);
+  }
   mapFlowRefs(d, (r) => hydrateFlowRef(id, r)); // FLOW: "flow/<arquivo>" → URL absoluta
   return d;
 }

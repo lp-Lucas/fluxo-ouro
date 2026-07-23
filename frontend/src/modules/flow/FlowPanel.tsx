@@ -53,7 +53,7 @@ type JobUI = { kind: "design" | "designPrompt" | "motionPrompt" | "animate"; pro
 
 export function FlowPanel({
   transcript, cuts, durationSec, copy, projectId, flow, onFlowChange, onPlacePopups,
-  flowPopups = [], onPatchFlowPopup, videoFile,
+  flowPopups = [], onPatchFlowPopup, videoFile, onExposeResize,
 }: {
   transcript: TranscriptSegment[]; cuts: Cut[]; durationSec: number; copy: string;
   projectId: string | null; flow: FlowState | undefined;
@@ -64,6 +64,8 @@ export function FlowPanel({
   flowPopups?: FullscreenPopup[];
   onPatchFlowPopup?: (id: string, patch: Partial<FullscreenPopup>) => void;
   videoFile?: File; // fonte de ÁUDIO pro playback no editor de motions
+  /** expõe o ajustarTempo (re-fit) pra timeline principal redimensionar clipes de motion. */
+  onExposeResize?: (fn: (ph: FlowPhrase, d: number | undefined) => void) => void;
 }) {
   const [detecting, setDetecting] = useState(false);
   const [resyncing, setResyncing] = useState(false);
@@ -347,6 +349,10 @@ export function FlowPanel({
     } catch (e) { patchPhrase(ph.id, { error: (e as Error).message }); }
     finally { setJob(ph.id, null); }
   }
+
+  // Expõe o ajustarTempo pra timeline principal (redimensionar clipes de motion lá).
+  // Sem deps: re-expõe a versão mais nova a cada render; onExposeResize só guarda num ref.
+  useEffect(() => { onExposeResize?.(ajustarTempo); });
 
   async function gerarVideo(ph: FlowPhrase) {
     if (!projectId) { setError("Salve o projeto antes de gerar."); return; }

@@ -9,7 +9,8 @@ import { ExportPanel } from "./modules/export/ExportPanel";
 import { DEFAULT_STYLE, type CaptionStyle } from "../../shared/captionStyle";
 import { DEFAULT_COLOR, type ColorSettings, type ColorPreset } from "../../shared/color";
 import { DEFAULT_CHROMA, type ChromaSettings } from "../../shared/chroma";
-import { emptyFlow, type FlowState, type FlowMoment } from "../../shared/flow";
+import { emptyFlow, type FlowState, type FlowMoment, type FlowPhrase } from "../../shared/flow";
+import { buildCutPlan, remapTime } from "../../shared/cutplan";
 import { parseCube, type ParsedLut } from "../../shared/lut";
 import type { EditorDocument, ProjectFile } from "../../shared/project";
 import { ColorPanel } from "./modules/color/ColorPanel";
@@ -104,6 +105,33 @@ export function App() {
   const setCaptions = setField("captions");
 
   const { transcript, cuts, zooms, popups, captionStyle, copy, color, chroma, flow, music, captions } = doc;
+
+  // ── MOTIONS na timeline principal (grupos por momento, resize individual via re-fit do FLOW) ──
+  const ajustarTempoRef = useRef<((ph: FlowPhrase, d: number | undefined) => void) | null>(null);
+  const exposeResize = useCallback((fn: (ph: FlowPhrase, d: number | undefined) => void) => { ajustarTempoRef.current = fn; }, []);
+  const motionGroups = useMemo(() => {
+    const plan = buildCutPlan(docExtra?.durationSec ?? 0, cuts);
+    const wordsArr = transcript.flatMap((s) => s.words);
+    const target = (ph: FlowPhrase) => {
+      const st = wordsArr[ph.wordStart]?.start ?? 0, en = wordsArr[ph.wordEnd]?.end ?? st;
+      const os = remapTime(st, plan), oe = remapTime(en, plan);
+      const fala = os != null && oe != null ? Math.max(0.3, oe - os) : Math.max(0.3, en - st);
+      return ph.overrideDuration && ph.overrideDuration > 0 ? ph.overrideDuration : fala;
+    };
+    return popups
+      .filter((p): p is FullscreenPopup => p.type === "fullscreen")
+      .map((p) => {
+        const m = flow?.moments.find((mm) => mm.id === p.flowPhraseId);
+        const clips = (m?.phrases ?? []).filter((ph) => ph.fittedVideoPath)
+          .map((ph) => ({ phraseId: ph.id, duration: +target(ph).toFixed(2), label: ph.text?.slice(0, 22), raw: ph.fitInfo?.rawDuration ?? target(ph), video: ph.fittedVideoPath }));
+        return { id: p.id, at: p.at, clips };
+      })
+      .filter((g) => g.clips.length > 0);
+  }, [popups, flow, transcript, cuts, docExtra?.durationSec]);
+  const onClipResize = useCallback((phraseId: string, duration: number) => {
+    const ph = flow?.moments.flatMap((m) => m.phrases).find((p) => p.id === phraseId);
+    if (ph && ajustarTempoRef.current) ajustarTempoRef.current(ph, duration);
+  }, [flow]);
 
   // Mudança de estilo da legenda. Se mexeu em "palavras por linha" E já há legendas
   // materializadas, RE-AGRUPA junto (atômico) — senão o slider não valia depois de alinhar
@@ -578,7 +606,7 @@ export function App() {
                   projectId={projectId} flow={flow} onFlowChange={setFlow} onPlacePopups={placeFlowPopups}
                   flowPopups={popups.filter((p) => p.type === "fullscreen" && (p as { flowPhraseId?: string }).flowPhraseId) as FullscreenPopup[]}
                   onPatchFlowPopup={(id, patch) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)))}
-                  videoFile={videoFile} /> ) },
+                  videoFile={videoFile} onExposeResize={exposeResize} /> ) },
               { id: "export", title: "7 · Exportar", startCollapsed: true, node: (
                 <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
                   durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} projectId={projectId} captions={captions} /> ) },
@@ -593,8 +621,9 @@ export function App() {
           <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
             words={transcript.flatMap((s) => s.words)}
             captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
-            motions={popups.filter((p): p is FullscreenPopup => p.type === "fullscreen").map((p) => ({ id: p.id, at: p.at, label: p.placeholder?.label }))}
-            onMotionMove={(id, at) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, at } : p)))} />
+            motionGroups={motionGroups}
+            onMotionMove={(id, at) => setPopups((prev) => prev.map((p) => (p.id === id ? { ...p, at } : p)))}
+            onClipResize={onClipResize} />
         </div>
       )}
     </main>
@@ -603,10 +632,12 @@ export function App() {
 
 /** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
  *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
-function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motions, onMotionMove }: {
+function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motionGroups, onMotionMove, onClipResize }: {
   bus: TransportBus; videoFile: File; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
   captions: Caption[]; onCaptionsChange: (c: Caption[]) => void; transcript: TranscriptSegment[]; maxWords?: number;
-  motions: { id: string; at: number; label?: string }[]; onMotionMove: (id: string, at: number) => void;
+  motionGroups: { id: string; at: number; clips: { phraseId: string; duration: number; label?: string; raw?: number; video?: string }[] }[];
+  onMotionMove: (id: string, at: number) => void;
+  onClipResize: (phraseId: string, duration: number) => void;
 }) {
   const [meta, setMeta] = useState({ duration: bus.state.duration, playing: bus.state.playing });
   useEffect(() => bus.subscribe((s: TransportState) => {
@@ -622,7 +653,7 @@ function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onC
     <CutTimeline videoFile={videoFile} duration={meta.duration} cuts={cuts} onCutsChange={onCutsChange}
       words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing}
       captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords}
-      motions={motions} onMotionMove={onMotionMove} />
+      motionGroups={motionGroups} onMotionMove={onMotionMove} onClipResize={onClipResize} />
   );
 }
 

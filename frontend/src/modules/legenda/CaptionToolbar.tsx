@@ -51,10 +51,13 @@ export function CaptionToolbar({
         </button>
       )}
 
-      {onRetranscribeCut && cuts.some((c) => c.enabled) && (
-        <button onClick={onRetranscribeCut} disabled={retranscribing} style={capBtnPrimary}
-          title="renderiza SÓ o áudio que sobrou na timeline (pulando os cortes), re-transcreve e reconstrói o roteiro + legendas — conserta legendas bugadas depois de muitos cortes. SUBSTITUI o roteiro atual.">
-          {retranscribing ? "⏳ retranscrevendo…" : "✂️ retranscrever (pulando cortes)"}
+      {onRetranscribeCut && (
+        <button onClick={onRetranscribeCut} disabled={retranscribing}
+          style={cuts.some((c) => c.enabled) ? capBtnPrimary : capBtnMuted}
+          title={cuts.some((c) => c.enabled)
+            ? "renderiza SÓ o áudio que sobrou na timeline (pulando os cortes), re-transcreve e reconstrói o roteiro + legendas — conserta legendas bugadas depois de muitos cortes. SUBSTITUI o roteiro atual."
+            : "re-transcreve o áudio inteiro e reconstrói o roteiro + legendas. (Com cortes ativos, pula os trechos cortados.) SUBSTITUI o roteiro atual."}>
+          {retranscribing ? "⏳ retranscrevendo…" : "✂️ retranscrever" + (cuts.some((c) => c.enabled) ? " (pulando cortes)" : "")}
         </button>
       )}
 

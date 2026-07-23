@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { editImageOpenRouter } from "./openrouter.js";
 
 const execFileP = promisify(execFile);
 
@@ -351,6 +352,70 @@ export async function outpaintBordas(
 // memo de sessão: 1º modelo de edits que funcionou (evita repetir um 400 por imagem)
 let outpaintModelOk: string | null = null;
 
+/**
+ * FIT margens VERTICAIS (fonte mais larga que o alvo, ex.: 2:3 -> 9:16) — CONTINUAÇÃO real.
+ *
+ * As faixas de cima/baixo são o ESPELHO (vflip) da faixa adjacente do próprio design: a linha
+ * do espelho que encosta no design é idêntica à borda (emenda invisível) e o gradiente/glow do
+ * fundo CONTINUA pra fora (reflete). Preserva a variação horizontal (o glow diagonal) — por
+ * isso não vira uma "banda separada" como a média horizontal fazia. O centro é o design EXATO
+ * (d0). Determinístico, sem IA, sem custo. Como o topo/base dessas peças é só fundo, o espelho
+ * não duplica conteúdo.
+ *
+ * OPCIONAL (OPENROUTER_MARGINS_AI=true + OPENROUTER_API_KEY): a IA (nano-banana) refina as
+ * margens a partir dessa base e crava o centro de volta — só pra quem quer fundo gerado.
+ */
+async function fitVerticalMargins(input: string, outPath: string, w: number, h: number, src: { w: number; h: number }, signal?: AbortSignal): Promise<void> {
+  const imgH = Math.round((src.h * w) / src.w); // altura do design contido na largura w
+  const diff = h - imgH;
+  if (diff < 8) { // margem irrelevante — só escala
+    await runFfmpeg(["-y", "-i", input, "-vf", `scale=${w}:${h}`, "-frames:v", "1", outPath], signal, "flow-imagem");
+    return;
+  }
+  const padTop = Math.floor(diff / 2), padBot = diff - padTop;
+  if (padTop > imgH || padBot > imgH) throw new Error("margem maior que a imagem — usa o fallback"); // espelho não cobre
+  const useAI = process.env.OPENROUTER_MARGINS_AI === "true" && !!(process.env.OPENROUTER_API_KEY ?? "").trim();
+  const base = useAI ? outPath + ".base.png" : outPath;
+
+  // BASE = design exato (d0) + margens = ESPELHO da faixa adjacente (preserva o glow diagonal
+  // e casa exato na emenda). Uma passada de ffmpeg.
+  await runFfmpeg([
+    "-y", "-i", input, "-filter_complex",
+    `[0:v]scale=${w}:${imgH},split=3[d0][d1][d2];` +
+    `[d1]crop=${w}:${padTop}:0:0,vflip[t];` +
+    `[d2]crop=${w}:${padBot}:0:${imgH - padBot},vflip[b];` +
+    `[t][d0][b]vstack=inputs=3[o]`,
+    "-map", "[o]", "-frames:v", "1", base,
+  ], signal, "flow-vmargin");
+  if (!useAI) return;
+
+  // OPCIONAL: IA refina as margens; CRAVA o design no centro de volta (protege o miolo). Se
+  // falhar, mantém a base lisa (que já é o resultado desejado).
+  const aiTmp = outPath + ".ai.png";
+  try {
+    const prompt =
+      "Only repaint the top and bottom margin bands so the background continues perfectly SMOOTHLY " +
+      "to the edges: a flat, seamless continuation of the existing color/gradient — NO shadows, NO " +
+      "vignette, NO glow, NO texture, NO objects, NO text, nothing new. Keep the central artwork " +
+      "EXACTLY as-is. Return the full frame at the same resolution.";
+    fs.writeFileSync(aiTmp, await editImageOpenRouter(base, prompt, signal));
+    const F = 20;
+    await runFfmpeg([
+      "-y", "-i", aiTmp, "-i", input, "-filter_complex",
+      `[0:v]scale=${w}:${h}[bg];` +
+      `[1:v]scale=${w}:${imgH},format=rgba,` +
+      `geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='255*clip(min(Y\\,${imgH - 1}-Y)/${F}\\,0\\,1)'[fg];` +
+      `[bg][fg]overlay=0:${padTop}[o]`,
+      "-map", "[o]", "-frames:v", "1", outPath,
+    ], signal, "flow-vmargin-ai");
+  } catch (e) {
+    console.error("[FLOW] margens IA falhou, mantendo extensão lisa:", (e as Error).message);
+    fs.copyFileSync(base, outPath);
+  } finally {
+    fs.rm(aiTmp, () => {}); fs.rm(base, () => {});
+  }
+}
+
 export async function saveImageFit(dataUrlOrPath: string, outPath: string, w: number, h: number, signal?: AbortSignal, painter?: { outpaint?: Outpainter["outpaint"] }): Promise<void> {
   let input = dataUrlOrPath;
   let tmp: string | null = null;
@@ -367,6 +432,19 @@ export async function saveImageFit(dataUrlOrPath: string, outPath: string, w: nu
     if (Math.abs(srcRatio - dstRatio) < 0.01) {
       await runFfmpeg(["-y", "-i", input, "-vf", `scale=${w}:${h}`, "-frames:v", "1", outPath], signal, "flow-imagem");
       return;
+    }
+
+    // MARGENS VERTICAIS (fonte mais larga que o alvo, 2:3 -> 9:16): extensão LISA das faixas
+    // de cima/baixo (determinística, centro exato). É o caminho padrão do 9:16 — sem sombra,
+    // sem streak. Se falhar por algum motivo, cai no outpaint mascarado/fallback abaixo.
+    if (srcRatio > dstRatio) {
+      try {
+        await fitVerticalMargins(input, outPath, w, h, src, signal);
+        console.log(`[FLOW] fit: margens verticais lisas${process.env.OPENROUTER_MARGINS_AI === "true" ? " + IA" : ""} (centro intacto)`);
+        return;
+      } catch (e) {
+        console.error("[FLOW] fit margens verticais falhou, seguindo p/ fallback:", (e as Error).message);
+      }
     }
 
     // PRIMÁRIO — INPAINT MASCARADO (outpaintBordas): a IA repinta SÓ as faixas de borda,

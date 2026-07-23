@@ -1357,7 +1357,7 @@ function DesignChat({ ph, busy, job, onZoom, onSend, onGerarDesign, cores, onUse
         )}
       </div>
 
-      {/* CANVAS DO ESBOÇO (tldraw): o snapshot persiste na frase; o PNG vira o blueprint */}
+      {/* CANVAS DO ESBOÇO (canvas próprio): o snapshot persiste na frase; o PNG vira o blueprint */}
       {sketchOpen && (
         <SketchCanvas aspect={ph.aspect ?? "9:16"} snapshot={ph.esboco} phraseId={ph.id}
           onUse={(png, snap) => { setSketchPng(png); onPatch({ esboco: snap }); setSketchOpen(false); }}

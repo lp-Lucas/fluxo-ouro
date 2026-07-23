@@ -51,7 +51,13 @@ const PREFIXOS = ["/api", "/uploads", "/projects"] as const;
 
 /** Aplica o subpath a uma URL de mesma origem que aponta pra um dos prefixos do backend. */
 export function comBase(url: string): string {
-  if (!BASE) return url; // dev (base "/") — nada a fazer
+  if (!BASE || !url) return url; // dev/export (base "/") — nada a fazer; mantem localhost p/ o Remotion
+  // Normaliza URL ABSOLUTA de localhost -> relativa. Assets gerados/salvos ANTES do fix de URL
+  // relativa (ou qualquer caminho legado) vinham como http://localhost:PORT/projects/... —
+  // dentro do iframe do OS, localhost e a maquina de quem abre -> 404 (video/imagem do motion
+  // ficavam PRETOS). Vira "/projects/..." e cai no reescritor de subpath abaixo. (Este trecho so
+  // roda sob subpath — no export BASE e "" e o retorno acima preserva o localhost que o Remotion usa.)
+  url = url.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i, "");
   const origem = window.location.origin;
   for (const p of PREFIXOS) {
     // relativa "/api/..." ainda sem o prefixo

@@ -4,6 +4,7 @@ import type { TranscriptSegment, Cut, Zoom, Popup, Caption } from "../../../../s
 import type { CaptionStyle } from "../../../../shared/captionStyle";
 import type { ColorSettings } from "../../../../shared/color";
 import type { Music } from "../../../../shared/timeline";
+import type { AudioSettings } from "../../../../shared/audio";
 import { isChromaActive, type ChromaSettings } from "../../../../shared/chroma";
 
 type State =
@@ -35,7 +36,7 @@ function capFullHD(w: number, h: number) {
  * Full HD (4K/8K são reduzidos p/ 1080p → render mais rápido).
  */
 export function ExportPanel({
-  videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, projectId, captions,
+  videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, audio, projectId, captions,
 }: {
   videoFile: File | null;
   transcript: TranscriptSegment[];
@@ -49,6 +50,8 @@ export function ExportPanel({
   color: ColorSettings;
   chroma: ChromaSettings;
   music?: Music;
+  /** Tratamento do audio da fala — o backend aplica antes de montar o audio do render. */
+  audio?: AudioSettings;
   projectId: string | null;
 }) {
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
@@ -100,7 +103,7 @@ export function ExportPanel({
     }
 
     const propsJson = JSON.stringify({
-      transcript, cuts, zooms, popups: popupsOut, style, color, chroma: chromaOut, music, durationSec, projectId, captions,
+      transcript, cuts, zooms, popups: popupsOut, style, color, chroma: chromaOut, music, audio, durationSec, projectId, captions,
       fps: 30, width: dims?.w ?? 1080, height: dims?.h ?? 1920,
     });
     form.append("props", propsJson);
@@ -166,6 +169,7 @@ export function ExportPanel({
           <span style={pillStyle}><strong style={{ color: "var(--text)" }}>{zooms.length}</strong>&nbsp;zooms</span>
           <span style={pillStyle}><strong style={{ color: "var(--text)" }}>{popups.length}</strong>&nbsp;popups</span>
           {music?.file && <span style={pillStyle}>música ✓</span>}
+          {audio?.enhance && <span style={pillStyle}>áudio tratado ✓</span>}
           {isChromaActive(chroma) && <span style={pillStyle}>chroma ✓</span>}
         </div>
 

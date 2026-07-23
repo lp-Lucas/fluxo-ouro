@@ -11,7 +11,7 @@ import { useEffect, useState, type ReactNode } from "react";
 export interface DockPanelDef {
   id: string;
   title: string;
-  icon?: string;
+  icon?: ReactNode;
   node: ReactNode;
   /** compat (modo gavetas antigo) — ignorado nas abas */
   startCollapsed?: boolean;
@@ -74,7 +74,10 @@ export function Dock({ panels, storageKey = "fluxo-dock" }: { panels: DockPanelD
                 outline: isOver ? "1px solid var(--accent-text)" : "none",
                 opacity: dragId === p.id ? 0.5 : 1,
               }}>
-              {p.title}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                {p.icon && <span style={{ opacity: isActive ? 1 : 0.85, display: "inline-flex" }}>{p.icon}</span>}
+                {p.title}
+              </span>
             </button>
           );
         })}

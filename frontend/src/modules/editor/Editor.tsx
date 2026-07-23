@@ -4,7 +4,6 @@ import type { Cut, Zoom, Popup, TranscriptSegment, Seconds } from "../../../../s
 import { removedDuration, generateAlternatingZooms } from "./autocut";
 import { repairWordTimings } from "../../../../shared/captions";
 import { runDecupagemServer, pollDecupagemAi, type DisfluenciaRegion } from "./decupagem";
-import { PopupsPanel } from "./popups/PopupsPanel";
 import type { TransportBus } from "../../workspace/transport";
 
 /**
@@ -376,10 +375,6 @@ export function Editor({
         </div>
       </div>
 
-      <hr className="fo-divider" />
-
-      {/* ───────── POPUPS ───────── */}
-      <PopupsPanel transcript={transcript} popups={popups} onChange={onPopupsChange} />
     </section>
   );
 }

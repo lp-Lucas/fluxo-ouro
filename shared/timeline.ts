@@ -14,6 +14,7 @@ import { DEFAULT_COLOR } from "./color.js";
 import type { ChromaSettings } from "./chroma.js";
 import { DEFAULT_CHROMA } from "./chroma.js";
 import type { FlowState } from "./flow.js";
+import type { AudioSettings } from "./audio.js";
 
 export type Seconds = number;
 
@@ -266,6 +267,11 @@ export interface Timeline {
   flow?: FlowState;
   /** Música de fundo (opcional). */
   music?: Music;
+  /**
+   * Tratamento do áudio da FALA (isolamento + masterização). Opcional; ausente
+   * ou `enhance: false` = o áudio original passa intocado. Ver shared/audio.ts.
+   */
+  audio?: AudioSettings;
 }
 
 export function emptyTimeline(fileName: string, durationSec: Seconds): Timeline {

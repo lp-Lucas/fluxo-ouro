@@ -13,10 +13,11 @@ import type { ChromaSettings } from "./chroma.js";
 import { DEFAULT_CHROMA } from "./chroma.js";
 import type { FlowState } from "./flow.js";
 import type { Music } from "./timeline.js";
+import type { AudioSettings } from "./audio.js";
 import type { Assembly } from "./assembly.js";
 
 /** Versão atual do schema de projeto. Incrementar a cada mudança que exija migração. */
-export const SCHEMA_VERSION = 6; // v6: adiciona `assembly` (Montador de origem) — opcional
+export const SCHEMA_VERSION = 7; // v7: adiciona `audio` (tratamento da fala) — opcional
 
 /**
  * Documento do editor (estado persistido). As referências de asset são strings:
@@ -39,6 +40,11 @@ export interface EditorDocument {
   flow?: FlowState;
   /** Música de fundo. Opcional. */
   music?: Music;
+  /**
+   * Tratamento do áudio da fala (isolamento + masterização). Ausente/`enhance: false`
+   * = o áudio original passa intocado. Ver shared/audio.ts.
+   */
+  audio?: AudioSettings;
   /**
    * Legendas materializadas (camada ajustável da timeline). Vazio/ausente = as linhas
    * são derivadas da transcrição, como sempre. Preenchido = mandam sobre a derivação.
@@ -127,6 +133,11 @@ export function migrateProject(raw: unknown): ProjectFile {
         // v5 → v6: adiciona `assembly` (Montador de origem). Ausente = sem montagem; o
         // projeto abre idêntico (source veio de upload único). Nada a preencher.
         v = 6;
+        break;
+      case 6:
+        // v6 → v7: adiciona `audio` (tratamento da fala). Ausente = desligado; o projeto
+        // abre com o áudio original, exatamente como era. Nada a preencher.
+        v = 7;
         break;
       default:
         throw new ProjectError(`Não há migração definida a partir da versão ${v}.`);

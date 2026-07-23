@@ -361,6 +361,12 @@ export function KaraokePreview({
   const stageStyle: React.CSSProperties = stage
     ? { position: "absolute", top: 0, left: 0, width: stage.w, height: stage.h, transform: `scale(${k})`, transformOrigin: "top left", pointerEvents: "none" }
     : { display: "none" };
+  // A ESCALA do palco é CSS-first (regra .fo-stage abaixo, com container query): ela
+  // acompanha a largura real do container no MESMO frame do layout. O scale(k) acima
+  // (medido por ResizeObserver) fica só de reserva pra navegador sem container query —
+  // era ele, sozinho, que deixava a legenda na altura errada quando a notificação do
+  // observer era descartada (loop de RO: banda → pvW → coluna → preview).
+  const stageProps = { className: "fo-stage", style: stageStyle };
 
   return (
     <section style={{ marginTop: 24 }}>
@@ -413,11 +419,28 @@ export function KaraokePreview({
           </select>
         </label>
       </div>
-      <div ref={containerRef} style={{ position: "relative", width: "100%", maxWidth: 480, background: "#000", overflow: "hidden" }}>
+      {/* ESCALA DO PALCO EM CSS PURO. O palco é desenhado em px de EXPORT (1080×1920) e
+          encolhido pra caber; esse fator PRECISA ser a largura real do container. Medi-lo
+          em JS (ResizeObserver → estado) atrasa um frame e, quando a notificação do
+          observer é descartada (o app tem RO aninhado: banda → pvW → coluna → preview),
+          ele CONGELA num valor antigo: o palco fica mais baixo que o vídeo e a legenda
+          sobe pro topo. Com container query o navegador resolve no próprio layout —
+          nunca desalinha. `inline-size` (não `size`): a altura continua vindo do vídeo. */}
+      {stage && (
+        <style>{`
+          @supports (container-type: inline-size) {
+            .fo-stage { transform: scale(calc(100cqw / ${stage.w})) !important; }
+          }
+        `}</style>
+      )}
+      <div ref={containerRef} data-fs
+        style={{ position: "relative", width: "100%", maxWidth: 480, background: "#000", overflow: "hidden",
+          containerType: "inline-size",
+          "--fs-aspect": natural ? `${natural.w} / ${natural.h}` : "9 / 16" } as React.CSSProperties}>
         <video
           ref={videoRef}
           src={src}
-          controls
+          onClick={togglePlayKept}
           onError={() =>
             setVideoError(
               "Não foi possível reproduzir este vídeo no navegador (provável codec não suportado, ex: H.265/HEVC ou .mkv). A transcrição e a legenda funcionam normalmente; para o preview, use um MP4 H.264.",
@@ -430,11 +453,15 @@ export function KaraokePreview({
             setDuration(e.currentTarget.duration || 0);
             // O PALCO (coords de export p/ legenda/popup) segue o vídeo ORIGINAL — nunca o
             // proxy (senão o WYSIWYG quebra: fontes/posições escalariam pro tamanho do proxy).
-            if (src === url) setNatural({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight });
+            // videoWidth 0 = metadados ainda incompletos. Aceitar isso fazia o palco
+            // virar 2×2px (capFullHD tem piso 2) e a legenda ir parar no topo, gigante.
+            const vw = e.currentTarget.videoWidth, vh = e.currentTarget.videoHeight;
+            if (src === url && vw > 0 && vh > 0) setNatural({ w: vw, h: vh });
           }}
           style={{
             width: "100%",
             display: "block",
+            cursor: "pointer",
             transform: `scale(${zoomScale})`,
             transition: "transform 0.4s ease",
             transformOrigin: "center center",
@@ -454,10 +481,10 @@ export function KaraokePreview({
             {eyedropper && (
               <div onPointerDown={pickAt} style={{ position: "absolute", inset: 0, cursor: "crosshair", zIndex: 5 }} />
             )}
-            <div style={stageStyle}><PopupsOverlay popups={behindPopups} clock={clock} playing={playing} plan={cutPlan} /></div>
+            <div {...stageProps}><PopupsOverlay popups={behindPopups} clock={clock} playing={playing} plan={cutPlan} /></div>
             <ColorCanvas video={videoRef.current} color={color} lut={lut} zoomScale={zoomScale} procScale={procScale}
               chroma={chroma} showMask={showMask} mode="person" />
-            <div style={stageStyle}><PopupsOverlay popups={frontPopups} clock={clock} playing={playing} plan={cutPlan} /></div>
+            <div {...stageProps}><PopupsOverlay popups={frontPopups} clock={clock} playing={playing} plan={cutPlan} /></div>
           </>
         ) : (
           <>
@@ -474,7 +501,7 @@ export function KaraokePreview({
             )}
 
             {/* Palco 1 (coords de export, escalado): POPUPS — ficam ATRÁS da pessoa */}
-            <div style={stageStyle}>
+            <div {...stageProps}>
               <PopupsOverlay popups={frontPopups} clock={clock} playing={playing} plan={cutPlan} />
             </div>
 
@@ -485,15 +512,22 @@ export function KaraokePreview({
         )}
 
         {/* Palco 2 (coords de export, escalado): LEGENDA — folha que assina o clock */}
-        <div style={stageStyle}>
+        <div {...stageProps}>
           <CaptionLayer clock={clock} lines={lines} style={style} />
         </div>
 
         {/* Palco 3: POPUPS FULLSCREEN — NA FRENTE das legendas (cobrem a tela toda) */}
-        <div style={stageStyle}>
+        <div {...stageProps}>
           <PopupsOverlay popups={fullscreenTop} clock={clock} playing={playing} plan={cutPlan} />
         </div>
       </div>
+
+      {/* PLAYER CUSTOM — controles integrados ao design do app (substitui os controles nativos
+          do <video>, que destoavam do layout). Ligado no togglePlayKept/seek/clock já existentes. */}
+      {duration > 0 && (
+        <PlayerBar clock={clock} duration={duration} playing={playing}
+          onToggle={togglePlayKept} onSeek={seek} videoRef={videoRef} containerRef={containerRef} />
+      )}
 
       {/* Timeline aqui só no modo AVULSO (sem a ponte) — com transporte, ela mora
           na barra FIXA inferior do app. */}
@@ -515,21 +549,6 @@ export function KaraokePreview({
         />
       )}
 
-      {/* Corte manual assistindo o vídeo */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
-        {markStart === null ? (
-          <button onClick={() => setMarkStart(clock.time)}>Marcar início do corte</button>
-        ) : (
-          <>
-            <span style={{ fontSize: 13, color: "var(--red)" }}>início: {markStart.toFixed(2)}s →</span>
-            <button onClick={() => addManualCut(false)}>Marcar fim e cortar</button>
-            <button onClick={() => addManualCut(true)} title="mantém a legenda, deslocando para depois do corte (take repetido)">
-              cortar + manter legenda
-            </button>
-            <button onClick={() => setMarkStart(null)} style={{ color: "var(--muted)" }}>cancelar</button>
-          </>
-        )}
-      </div>
     </section>
   );
 }
@@ -610,6 +629,158 @@ function CaptionLayer({ clock, lines, style }: {
           })}
         </span>
       )}
+    </div>
+  );
+}
+
+// ─────────────── PLAYER CUSTOM (substitui os controles nativos do <video>) ───────────────
+const fmtTime = (t: number) => {
+  const s = Math.max(0, Math.floor(t));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+const PLAYER_ICONS: Record<string, { d: string; fill?: boolean }> = {
+  play: { d: "M7 4l13 8-13 8z", fill: true },
+  pause: { d: "M7 5h3v14H7zM14 5h3v14h-3z", fill: true },
+  back: { d: "M11 5L4 12l7 7M4 12h16" },
+  fwd: { d: "M13 5l7 7-7 7M20 12H4" },
+  vol: { d: "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 010 6" },
+  mute: { d: "M4 9v6h4l5 4V5L8 9zM16 9l5 6M21 9l-5 6" },
+  full: { d: "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" },
+};
+function PBIcon({ name, size = 16 }: { name: keyof typeof PLAYER_ICONS; size?: number }) {
+  const ic = PLAYER_ICONS[name];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24"
+      fill={ic.fill ? "currentColor" : "none"} stroke={ic.fill ? "none" : "currentColor"}
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round"><path d={ic.d} /></svg>
+  );
+}
+/**
+ * Barra de player com a cara do app. O tempo/progresso é pintado por clock.subscribe
+ * (imperativo, sem re-render por frame — mesma filosofia P1 do preview). Botões ligam no
+ * togglePlayKept/seek já existentes; volume e tela cheia agem direto no <video>/container.
+ */
+function PlayerBar({ clock, duration, playing, onToggle, onSeek, videoRef, containerRef }: {
+  clock: { time: number; subscribe: (f: (t: number) => void) => () => void };
+  duration: number; playing: boolean; onToggle: () => void; onSeek: (t: number) => void;
+  videoRef: { current: HTMLVideoElement | null }; containerRef: { current: HTMLDivElement | null };
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const fillRef = useRef<HTMLDivElement>(null);
+  const timeRef = useRef<HTMLSpanElement>(null);
+  const [muted, setMuted] = useState(false);
+  useEffect(() => {
+    const paint = (t: number) => {
+      const pct = duration > 0 ? Math.max(0, Math.min(100, (t / duration) * 100)) : 0;
+      if (fillRef.current) fillRef.current.style.width = pct + "%";
+      if (timeRef.current) timeRef.current.textContent = fmtTime(t);
+    };
+    paint(clock.time);
+    return clock.subscribe(paint);
+  }, [clock, duration]);
+  const seekAt = (e: React.MouseEvent) => {
+    const el = trackRef.current; if (!el || duration <= 0) return;
+    const r = el.getBoundingClientRect();
+    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration);
+  };
+  const toggleMute = () => { const v = videoRef.current; if (!v) return; v.muted = !v.muted; setMuted(v.muted); };
+  const fullscreen = () => { const el = containerRef.current; if (el?.requestFullscreen) el.requestFullscreen().catch(() => {}); };
+  return (
+    <div style={{ width: "100%", maxWidth: 480, marginTop: 10 }}>
+      <div ref={trackRef} onClick={seekAt}
+        style={{ height: 6, borderRadius: 3, background: "var(--panel3)", cursor: "pointer", marginBottom: 9, overflow: "hidden" }}>
+        <div ref={fillRef} style={{ height: "100%", width: "0%", background: "linear-gradient(90deg,#b3a3cf,#9aa4c8)" }} />
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={() => onSeek(0)} style={pbBtn} title="Início"><PBIcon name="back" /></button>
+        <button onClick={onToggle} style={{ ...pbBtn, ...pbBtnPlay }} title="Play / Pause (espaço)"><PBIcon name={playing ? "pause" : "play"} size={18} /></button>
+        <button onClick={() => onSeek(duration)} style={pbBtn} title="Fim"><PBIcon name="fwd" /></button>
+        <span style={{ fontSize: 12, color: "var(--muted)", fontVariantNumeric: "tabular-nums", marginLeft: 2 }}>
+          <span ref={timeRef} style={{ color: "var(--text)" }}>00:00</span> / {fmtTime(duration)}
+        </span>
+        <span style={{ flex: 1 }} />
+        <AudioMeter videoRef={videoRef} playing={playing} />
+        <button onClick={toggleMute} style={pbBtn} title="Mudo"><PBIcon name={muted ? "mute" : "vol"} /></button>
+        <button onClick={fullscreen} style={pbBtn} title="Tela cheia"><PBIcon name="full" /></button>
+      </div>
+    </div>
+  );
+}
+const pbBtn: React.CSSProperties = {
+  width: 32, height: 32, borderRadius: 9, border: "1px solid var(--border)",
+  background: "var(--panel2)", color: "var(--text)", display: "grid", placeItems: "center", cursor: "pointer", padding: 0,
+};
+const pbBtnPlay: React.CSSProperties = {
+  width: 38, height: 38, background: "linear-gradient(180deg,#3d3d3d,#313131)", borderColor: "transparent",
+  boxShadow: "0 10px 24px rgba(0,0,0,.45),0 2px 6px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.06)",
+};
+
+// ─────────────── SENSOR DE ÁUDIO (VU meter + clip) ───────────────
+// Analisa o <video> via Web Audio (AnalyserNode). Verde/laranja = ok; VERMELHO (pico ~0dBFS)
+// = ESTOURANDO. createMediaElementSource só pode rodar 1x por elemento — cacheado por WeakMap.
+const audioGraphs = new WeakMap<HTMLMediaElement, { ctx: AudioContext; analyser: AnalyserNode }>();
+function getAudioGraph(v: HTMLMediaElement): { ctx: AudioContext; analyser: AnalyserNode } | null {
+  const cached = audioGraphs.get(v);
+  if (cached) return cached;
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AC();
+    const src = ctx.createMediaElementSource(v);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    analyser.connect(ctx.destination); // mantém o áudio tocando pelo grafo
+    const g = { ctx, analyser };
+    audioGraphs.set(v, g);
+    return g;
+  } catch { return null; } // já conectado (outro mount) ou sem áudio
+}
+function AudioMeter({ videoRef, playing }: { videoRef: { current: HTMLVideoElement | null }; playing: boolean }) {
+  const maskRef = useRef<HTMLDivElement>(null);
+  const clipRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<{ ctx: AudioContext; analyser: AnalyserNode; data: Uint8Array<ArrayBuffer> } | null>(null);
+  const clipAtRef = useRef(0);
+  // Cria o grafo Web Audio no 1º PLAY (gesto do usuário libera o AudioContext). Criar antes
+  // rotearia o áudio por um ctx suspenso -> vídeo mudo. Antes do play, o áudio toca nativo.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (playing && v && !graphRef.current) {
+      const g = getAudioGraph(v);
+      if (g) graphRef.current = { ...g, data: new Uint8Array(new ArrayBuffer(g.analyser.fftSize)) };
+    }
+    if (playing) graphRef.current?.ctx.resume().catch(() => {});
+  }, [playing, videoRef]);
+  // Loop de leitura do nível (rAF) — pinta o meter e o clip imperativamente.
+  useEffect(() => {
+    let id = 0;
+    const tick = () => {
+      const g = graphRef.current;
+      if (g) {
+        g.analyser.getByteTimeDomainData(g.data);
+        let peak = 0;
+        for (let i = 0; i < g.data.length; i++) { const a = Math.abs(g.data[i] - 128) / 128; if (a > peak) peak = a; }
+        const pct = Math.min(100, peak * 100);
+        if (maskRef.current) maskRef.current.style.width = (100 - pct) + "%";
+        if (peak >= 0.985) clipAtRef.current = performance.now();
+        const clipping = performance.now() - clipAtRef.current < 900; // peak-hold ~0.9s
+        if (clipRef.current) {
+          clipRef.current.style.background = clipping ? "#ff3b3b" : "var(--panel3)";
+          clipRef.current.style.boxShadow = clipping ? "0 0 7px #ff3b3b" : "none";
+        }
+      }
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return (
+    <div title="Sensor de áudio — verde/laranja ok · VERMELHO = áudio ESTOURANDO (clip)"
+      style={{ display: "flex", alignItems: "center", gap: 6, marginRight: 2 }}>
+      <div style={{ position: "relative", width: 84, height: 8, borderRadius: 4, overflow: "hidden",
+        background: "linear-gradient(90deg,#3ea567 0%,#3ea567 52%,#e0b64a 76%,#ff3b3b 92%)" }}>
+        <div ref={maskRef} style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: "100%", background: "var(--panel3)" }} />
+      </div>
+      <div ref={clipRef} title="clip (estouro)" style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--panel3)", flex: "0 0 7px" }} />
     </div>
   );
 }

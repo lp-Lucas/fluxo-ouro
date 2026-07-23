@@ -752,7 +752,7 @@ export function CutTimeline({
 
       {/* linha selecionada: mesmo idioma visual, borda acesa */}
       {selLine ? (
-        <div style={{ ...capBar, borderColor: "rgba(140, 180, 255, 0.4)" }}>
+        <div style={{ ...capBar, borderColor: "var(--border-active)" }}>
           <span style={capChip}>
             ✎ {fmt(selLine.start)}–{fmt(selLine.end)}
             <span style={{ color: "var(--muted)", fontWeight: 400 }}>· {(selLine.end - selLine.start).toFixed(2)}s</span>
@@ -781,7 +781,7 @@ export function CutTimeline({
             <span style={capGroupSep} />
             <button style={capGroupBtn} onClick={capMergeNext} title="funde com a próxima legenda">⇥ juntar</button>
             <span style={capGroupSep} />
-            <button style={{ ...capGroupBtn, color: needsTimingRepair(selLine) ? "#ffb4a2" : undefined }}
+            <button style={{ ...capGroupBtn, color: needsTimingRepair(selLine) ? "var(--red)" : undefined }}
               onClick={capDistribute}
               title="espalha as palavras por igual na janela — conserta linha travada (palavra de ~0s ou buraco morto)">⇄ distribuir</button>
           </span>

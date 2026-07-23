@@ -17,6 +17,10 @@ out/
 *.mp4
 *.mov
 *.wav
+*.m4a
+# amostras de áudio da comparação da cadeia de tratamento (só a pasta da RAIZ —
+# ancorado com "/" pra NÃO pegar backend/src/audio/ nem frontend/src/modules/audio/)
+/audio/
 
 # Dados de runtime — projetos criados no app (assets + exports, ~8 GB)
 backend/projects/

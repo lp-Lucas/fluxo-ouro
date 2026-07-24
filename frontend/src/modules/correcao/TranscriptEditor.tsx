@@ -36,26 +36,37 @@ export function TranscriptEditor({
   const [scriptOpen, setScriptOpen] = useState(false); // popup "corrigir pelo script"
   const [scriptDraft, setScriptDraft] = useState("");
 
+  // Feedback IN-APP (não usa alert/confirm — dentro do iframe do OS os diálogos nativos
+  // são suprimidos e o botão parecia "não fazer nada"). Mostra recusa/erro/sucesso na tela.
+  const [aviso, setAviso] = useState<{ tipo: "erro" | "ok"; texto: string } | null>(null);
+
   /**
    * Auto-corrigir com a copy: troca palavras erradas e (opcional) corta o que está fora.
    * (A checagem de SINCRONIA de tempo fica no "conferir legendas" da Etapa 2 — aqui
    * não, porque este botão aplica cortes automáticos.)
    */
   function autoCorrigir(texto?: string) {
-    const roteiro = texto ?? copy;
-    // detecta os cortes ANTES de corrigir (a correção remove as palavras fora da copy);
-    // só substitui se achou algo, pra não zerar cortes ao reclicar já corrigido.
-    const r = detectCutsFromCopy(transcript, roteiro);
-    if (r.refused) {
-      alert(
-        `⚠️ Auto-correção RECUSADA: só ${r.matchedWords} de ${r.totalWords} palavras da fala batem com a copy colada.\n\n` +
-        `Essa copy não parece ser o roteiro deste vídeo — corrigir/cortar agora destruiria a transcrição e cortaria o vídeo inteiro.\n\n` +
-        `Confira o texto da copy e tente de novo.`,
-      );
-      return;
+    const roteiro = (texto ?? copy).trim();
+    setAviso(null);
+    if (!roteiro) { setAviso({ tipo: "erro", texto: "Cole a copy/roteiro antes de auto-corrigir." }); return; }
+    try {
+      // detecta os cortes ANTES de corrigir (a correção remove as palavras fora da copy);
+      // só substitui se achou algo, pra não zerar cortes ao reclicar já corrigido.
+      const r = detectCutsFromCopy(transcript, roteiro);
+      if (r.refused) {
+        setAviso({ tipo: "erro", texto:
+          `Auto-correção recusada: só ${r.matchedWords} de ${r.totalWords} palavras da fala batem com esta copy. ` +
+          `Ela não parece ser o roteiro deste vídeo — corrigir agora destruiria a transcrição. Confira a copy e tente de novo.` });
+        return;
+      }
+      if (cutOutside && r.cuts.length > 0) onApplyCopyCuts(r.cuts);
+      onChange(correctWithCopy(transcript, roteiro));
+      setAviso({ tipo: "ok", texto:
+        `Corrigido com a copy (${r.matchedWords}/${r.totalWords} palavras)` +
+        (cutOutside && r.cuts.length > 0 ? ` · ${r.cuts.length} corte(s) fora do roteiro aplicado(s).` : ".") });
+    } catch (e) {
+      setAviso({ tipo: "erro", texto: "Falha ao auto-corrigir: " + (e as Error).message });
     }
-    if (cutOutside && r.cuts.length > 0) onApplyCopyCuts(r.cuts);
-    onChange(correctWithCopy(transcript, roteiro));
   }
 
   /** Popup "corrigir pelo script": cola o roteiro, corrige e salva como copy do projeto. */
@@ -252,6 +263,17 @@ export function TranscriptEditor({
         .tr-w { transition: background 0.12s ease; }
         .tr-w:hover { background: var(--panel3) !important; }
       `}</style>
+
+      {/* FEEDBACK do auto-corrigir (substitui o alert nativo, suprimido no iframe do OS) */}
+      {aviso && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, padding: "8px 12px", borderRadius: 10, fontSize: 12.5,
+          background: aviso.tipo === "erro" ? "rgba(230,70,70,.12)" : "rgba(88,196,120,.12)",
+          border: `1px solid ${aviso.tipo === "erro" ? "var(--red)" : "var(--green)"}`,
+          color: aviso.tipo === "erro" ? "var(--red)" : "var(--green)" }}>
+          <span style={{ flex: 1 }}>{aviso.texto}</span>
+          <button onClick={() => setAviso(null)} style={{ background: "transparent", border: "none", color: "inherit", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+        </div>
+      )}
 
       {/* COPY — barra compacta; expande só quando precisa mexer */}
       <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: copyOpen ? "16px" : "8px 12px", marginBottom: 12, flexShrink: 0 }}>

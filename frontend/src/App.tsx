@@ -318,14 +318,13 @@ export function App() {
       const r = await fetch(comBase("/api/ingest"), { method: "POST", body: form });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? "Falha ao enviar o vídeo");
-      let width = Number(data.width) || 0, height = Number(data.height) || 0, durationSec = Number(data.durationSec) || 0;
-      if (!width || !height || !durationSec) {
-        const url = URL.createObjectURL(video); const dims = await readVideoDims(url); URL.revokeObjectURL(url);
-        width = width || dims.w; height = height || dims.h; durationSec = durationSec || dims.dur;
-      }
+      // Dimensões pelo CLIENTE (<video>): respeitam a ROTAÇÃO do arquivo. O ffprobe do
+      // servidor devolve as dimensões CODIFICADAS (ignora a flag de rotação) — um vídeo de
+      // celular retrato viraria "landscape" e o preview quebrava.
+      const url = URL.createObjectURL(video); const dims = await readVideoDims(url); URL.revokeObjectURL(url);
       const document: EditorDocument = {
-        sourceVideo: data.videoFile, durationSec: durationSec || 1,
-        width, height, transcript: [],
+        sourceVideo: data.videoFile, durationSec: Number(data.durationSec) || dims.dur || 1,
+        width: dims.w || 1080, height: dims.h || 1920, transcript: [],
         cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, captions: [], copy: "",
       };
       const pr = await fetch(comBase("/api/projects"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
@@ -357,6 +356,16 @@ export function App() {
       // minutos). O blob carrega em BACKGROUND (só p/ waveform/export); a edição já está usável.
       const url = comBase(pf.document.sourceVideo);
       loadInto(pf, null, url);
+      // AUTO-CORREÇÃO de proporção: projetos criados por ingestão podem ter sido salvos com as
+      // dimensões CODIFICADAS (ffprobe ignora a rotação). Lê a proporção REAL (rotação aplicada)
+      // do <video> e conserta se estiver divergente — senão o preview fica com barras/torto.
+      readVideoDims(url).then((dims) => {
+        if (!dims.w || !dims.h || latest.current.projectId !== pf.meta.id) return;
+        const dw = pf.document.width || 1, dh = pf.document.height || 1;
+        if (Math.abs(dw / dh - dims.w / dims.h) > 0.02) {
+          setDocExtra((e) => (e ? { ...e, width: dims.w, height: dims.h } : e));
+        }
+      }).catch(() => { /* sem metadata: mantém o que veio do projeto */ });
       fetch(url).then((vr) => (vr.ok ? vr.blob() : null)).then((blob) => {
         if (blob && latest.current.projectId === pf.meta.id) {
           setVideoFile(new File([blob], "video.mp4", { type: blob.type || "video/mp4" }));
@@ -645,7 +654,7 @@ export function App() {
             background: "var(--panel)", color: "var(--text)", borderRadius: 12, border: "1px solid var(--border)",
             padding: 12,
           }}>
-            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} durationSec={docExtra?.durationSec} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
+            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} durationSec={docExtra?.durationSec} width={docExtra?.width} height={docExtra?.height} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
               cuts={cuts} onCutsChange={setCuts} captions={captions} onCaptionsChange={setCaptions}
               zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
               chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}

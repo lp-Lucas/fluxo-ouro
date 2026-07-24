@@ -38,6 +38,8 @@ export function KaraokePreview({
   videoFile,
   videoUrl,
   durationSec,
+  width: docW,
+  height: docH,
   projectId,
   sourceAsset,
   transcript,
@@ -65,6 +67,9 @@ export function KaraokePreview({
   videoUrl: string;
   /** duração do projeto (JSON) — semeia o preview/timeline SEM esperar o metadata do <video>. */
   durationSec?: number;
+  /** dimensões do projeto (JSON, rotação já aplicada) — fonte autoritativa do PALCO. */
+  width?: number;
+  height?: number;
   /** projeto atual: com projectId + sourceAsset o proxy é gerado SERVER-SIDE (sem upload). */
   projectId?: string | null;
   sourceAsset?: string;
@@ -194,7 +199,11 @@ export function KaraokePreview({
     v.addEventListener("seeked", onSeek);
     return () => { clearInterval(iv); v.removeEventListener("seeked", onSeek); };
   }, [playing, fixAudioUrl]);
-  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null); // resolução real do vídeo
+  const [naturalMeta, setNatural] = useState<{ w: number; h: number } | null>(null); // dims do metadata do <video> (fallback)
+  // PALCO/proporção: as dimensões do PROJETO (docW/docH, com a rotação já aplicada) são a
+  // fonte autoritativa — o metadata do <video> pode vir do proxy ou das dims codificadas
+  // (ffprobe ignora rotação). Só cai no metadata se o projeto não trouxe dimensões.
+  const natural = (docW && docH && docW > 0 && docH > 0) ? { w: docW, h: docH } : naturalMeta;
   const [containerW, setContainerW] = useState(0); // largura exibida do preview
 
   // Acompanha a largura exibida do preview (para escalar o "palco" export→tela).

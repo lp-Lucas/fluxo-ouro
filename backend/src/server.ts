@@ -181,6 +181,26 @@ registraExecutores(async ({ projetoId, videoPath, props, onProgress, signal }) =
 });
 
 /**
+ * INGESTÃO SEM TRANSCRIÇÃO: recebe o vídeo bruto e devolve só a referência + duração/
+ * dimensões. O projeto nasce SEM roteiro — o usuário decupa/corta primeiro e transcreve
+ * depois (via /api/retranscribe-cut), o que dá legenda mais precisa e menos retrabalho.
+ */
+app.post("/api/ingest", upload.single("video"), async (req, res) => {
+  if (!req.file) { res.status(400).json({ error: "Nenhum arquivo enviado (campo 'video')." }); return; }
+  try {
+    const [durationSec, dims] = await Promise.all([
+      probeDuration(req.file.path).catch(() => 0),
+      probeImageDims(req.file.path).catch(() => ({ w: 0, h: 0 })),
+    ]);
+    // mantém o upload (vira asset ao criar o projeto); a limpeza de 24h remove os órfãos.
+    res.json({ videoFile: req.file.filename, fileName: req.file.originalname, durationSec, width: dims.w, height: dims.h });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+    fs.rm(req.file.path, () => {});
+  }
+});
+
+/**
  * INGESTÃO + TRANSCRIÇÃO: recebe o vídeo bruto, roda faster-whisper e
  * devolve os segmentos com timestamps (fonte única da timeline).
  */

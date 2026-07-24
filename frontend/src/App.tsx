@@ -207,26 +207,30 @@ export function App() {
     // sem confirm()/alert() nativos: dentro do iframe do OS eles são suprimidos (o confirm
     // voltava false e o botão "não fazia nada"). Confirmação e erros in-app.
     if (!projectId) { setAppAviso("Salve o projeto antes (a transcrição lê o vídeo do projeto no servidor)."); return; }
+    const doRun = async () => {
+      setAppConfirm(null);
+      setRetranscribing(true);
+      try {
+        const r = await fetch(comBase("/api/retranscribe-cut"), {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId, cuts, durationSec: docExtra?.durationSec }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error ?? "Falha ao transcrever");
+        const tr = ensureWordIds(data.transcript as TranscriptSegment[]);
+        // roteiro novo (tempo de fonte) + legendas zeradas → re-derivam limpas do roteiro.
+        setDoc((d) => ({ ...d, transcript: tr, captions: [] }));
+      } catch (e) {
+        setAppAviso("Erro ao transcrever: " + (e as Error).message);
+      } finally { setRetranscribing(false); }
+    };
+    // PRIMEIRA transcrição (roteiro vazio): roda direto — não há nada pra substituir.
+    // REGERAÇÃO: confirma, pois substitui o roteiro atual e as legendas.
+    if (transcript.length === 0) { doRun(); return; }
     setAppConfirm({
       msg: "Retranscrever só o áudio que sobrou na timeline (pulando os cortes)? Isso SUBSTITUI o roteiro atual e reconstrói as legendas — os ajustes manuais de texto/tempo serão perdidos.",
       okLabel: "Retranscrever",
-      onConfirm: async () => {
-        setAppConfirm(null);
-        setRetranscribing(true);
-        try {
-          const r = await fetch(comBase("/api/retranscribe-cut"), {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ projectId, cuts, durationSec: docExtra?.durationSec }),
-          });
-          const data = await r.json();
-          if (!r.ok) throw new Error(data.error ?? "Falha ao retranscrever");
-          const tr = ensureWordIds(data.transcript as TranscriptSegment[]);
-          // roteiro novo (tempo de fonte) + legendas zeradas → re-derivam limpas do roteiro.
-          setDoc((d) => ({ ...d, transcript: tr, captions: [] }));
-        } catch (e) {
-          setAppAviso("Erro ao retranscrever: " + (e as Error).message);
-        } finally { setRetranscribing(false); }
-      },
+      onConfirm: doRun,
     });
   }
   // Ponte preview ↔ timeline fixa (barra inferior) — um objeto estável por sessão.
@@ -306,17 +310,22 @@ export function App() {
   }
 
   async function criarProjeto(name: string, video: File) {
-    setBusy("Transcrevendo o vídeo… (pode demorar)");
+    // FLUXO NOVO: enviar o vídeo NÃO transcreve — só ingere. A transcrição vem depois, pelo
+    // botão "Transcrever vídeo" (após decupar/cortar) — legenda mais precisa, menos retrabalho.
+    setBusy("Enviando o vídeo…");
     try {
       const form = new FormData(); form.append("video", video);
-      const r = await fetch(comBase("/api/transcribe"), { method: "POST", body: form });
+      const r = await fetch(comBase("/api/ingest"), { method: "POST", body: form });
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error ?? "Falha na transcrição");
-      const url = URL.createObjectURL(video);
-      const dims = await readVideoDims(url); URL.revokeObjectURL(url);
+      if (!r.ok) throw new Error(data.error ?? "Falha ao enviar o vídeo");
+      let width = Number(data.width) || 0, height = Number(data.height) || 0, durationSec = Number(data.durationSec) || 0;
+      if (!width || !height || !durationSec) {
+        const url = URL.createObjectURL(video); const dims = await readVideoDims(url); URL.revokeObjectURL(url);
+        width = width || dims.w; height = height || dims.h; durationSec = durationSec || dims.dur;
+      }
       const document: EditorDocument = {
-        sourceVideo: data.videoFile, durationSec: data.durationSec ?? dims.dur,
-        width: dims.w, height: dims.h, transcript: ensureWordIds(data.transcript),
+        sourceVideo: data.videoFile, durationSec: durationSec || 1,
+        width, height, transcript: [],
         cuts: [], zooms: [], popups: [], captionStyle: DEFAULT_STYLE, color: DEFAULT_COLOR, chroma: DEFAULT_CHROMA, captions: [], copy: "",
       };
       const pr = await fetch(comBase("/api/projects"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, document }) });
@@ -324,7 +333,7 @@ export function App() {
       if (!pr.ok) throw new Error(pf.error ?? "Falha ao criar projeto");
       setLut(null); setLutName(null); setLutText(null);
       loadInto(pf, video, URL.createObjectURL(video));
-    } catch (e) { setBusy(null); alert("Erro ao criar projeto: " + (e as Error).message); }
+    } catch (e) { setBusy(null); setAppAviso("Erro ao criar projeto: " + (e as Error).message); }
   }
 
   async function abrirProjeto(id: string) {

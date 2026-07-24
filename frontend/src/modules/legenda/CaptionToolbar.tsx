@@ -41,7 +41,21 @@ export function CaptionToolbar({
   const sobrepostas = countCaptionOverlaps(lines);
   const temCortes = cuts.some((c) => c.enabled);
 
-  if (transcript.length === 0) return null;
+  // FLUXO NOVO: o vídeo entra SEM transcrição — decupa/corta primeiro, transcreve depois
+  // (mais preciso, menos retrabalho). Sem roteiro ainda, mostra só o "Transcrever vídeo".
+  if (transcript.length === 0) {
+    if (!onRetranscribeCut) return null;
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12.5 }}>
+        <button onClick={onRetranscribeCut} disabled={retranscribing} style={capBtnPrimary}
+          title="transcreve o áudio do vídeo (pulando os cortes, se houver) e cria o roteiro + as legendas">
+          <Icon name="target" size={13} />
+          {retranscribing ? "transcrevendo…" : "Transcrever vídeo"}
+        </button>
+        <span style={{ color: "var(--muted)" }}>decupe/corte o vídeo primeiro — a legenda sai já limpa, pulando os cortes.</span>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12.5 }}>

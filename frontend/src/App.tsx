@@ -92,6 +92,7 @@ export function App() {
   const [showAssembly, setShowAssembly] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [appAviso, setAppAviso] = useState<string | null>(null); // aviso/erro visível (alert nativo some no iframe)
+  const [appConfirm, setAppConfirm] = useState<{ msg: string; okLabel?: string; onConfirm: () => void } | null>(null); // confirm in-app (confirm nativo some no iframe)
   const [saveState, setSaveState] = useState<SaveState>("salvo");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
@@ -202,23 +203,31 @@ export function App() {
    * legendas materializadas (elas re-derivam do roteiro novo) — resolve legendas bugadas
    * depois de muitos cortes, sem palavra atravessando a borda de um corte.
    */
-  async function retranscreverPulandoCortes() {
-    if (!projectId) { alert("Salve o projeto antes (a transcrição lê o vídeo do projeto no servidor)."); return; }
-    if (!confirm("Retranscrever só o áudio que sobrou na timeline (pulando os cortes)?\n\nIsso SUBSTITUI o roteiro atual e reconstrói as legendas. Os ajustes manuais de texto/tempo serão perdidos.")) return;
-    setRetranscribing(true);
-    try {
-      const r = await fetch(comBase("/api/retranscribe-cut"), {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, cuts, durationSec: docExtra?.durationSec }),
-      });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error ?? "Falha ao retranscrever");
-      const tr = ensureWordIds(data.transcript as TranscriptSegment[]);
-      // roteiro novo (tempo de fonte) + legendas zeradas → re-derivam limpas do roteiro.
-      setDoc((d) => ({ ...d, transcript: tr, captions: [] }));
-    } catch (e) {
-      alert("Erro ao retranscrever: " + (e as Error).message);
-    } finally { setRetranscribing(false); }
+  function retranscreverPulandoCortes() {
+    // sem confirm()/alert() nativos: dentro do iframe do OS eles são suprimidos (o confirm
+    // voltava false e o botão "não fazia nada"). Confirmação e erros in-app.
+    if (!projectId) { setAppAviso("Salve o projeto antes (a transcrição lê o vídeo do projeto no servidor)."); return; }
+    setAppConfirm({
+      msg: "Retranscrever só o áudio que sobrou na timeline (pulando os cortes)? Isso SUBSTITUI o roteiro atual e reconstrói as legendas — os ajustes manuais de texto/tempo serão perdidos.",
+      okLabel: "Retranscrever",
+      onConfirm: async () => {
+        setAppConfirm(null);
+        setRetranscribing(true);
+        try {
+          const r = await fetch(comBase("/api/retranscribe-cut"), {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ projectId, cuts, durationSec: docExtra?.durationSec }),
+          });
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error ?? "Falha ao retranscrever");
+          const tr = ensureWordIds(data.transcript as TranscriptSegment[]);
+          // roteiro novo (tempo de fonte) + legendas zeradas → re-derivam limpas do roteiro.
+          setDoc((d) => ({ ...d, transcript: tr, captions: [] }));
+        } catch (e) {
+          setAppAviso("Erro ao retranscrever: " + (e as Error).message);
+        } finally { setRetranscribing(false); }
+      },
+    });
   }
   // Ponte preview ↔ timeline fixa (barra inferior) — um objeto estável por sessão.
   const transport = useRef(new TransportBus()).current;
@@ -558,6 +567,21 @@ export function App() {
           background: "rgba(230,70,70,.14)", borderBottom: "1px solid var(--red)", color: "var(--red)", fontSize: 13 }}>
           <span style={{ flex: 1 }}>{appAviso}</span>
           <button onClick={() => setAppAviso(null)} style={{ background: "transparent", border: "1px solid var(--red)", color: "var(--red)", borderRadius: 8, padding: "3px 12px", fontSize: 12, cursor: "pointer" }}>OK</button>
+        </div>
+      )}
+
+      {/* CONFIRMAÇÃO in-app (o confirm nativo é suprimido dentro do iframe do OS) */}
+      {appConfirm && (
+        <div onClick={() => setAppConfirm(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: "min(500px, 92%)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 14, padding: "20px 22px", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
+            <div style={{ fontSize: 13.5, color: "var(--text)", lineHeight: 1.55 }}>{appConfirm.msg}</div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setAppConfirm(null)} style={{ background: "var(--panel3)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 10, padding: "8px 16px", fontSize: 13, cursor: "pointer" }}>Cancelar</button>
+              <button onClick={() => appConfirm.onConfirm()} style={{ background: "var(--accent)", color: "#141414", fontWeight: 600, border: "none", borderRadius: 10, padding: "8px 20px", fontSize: 13, cursor: "pointer" }}>{appConfirm.okLabel ?? "Confirmar"}</button>
+            </div>
+          </div>
         </div>
       )}
 

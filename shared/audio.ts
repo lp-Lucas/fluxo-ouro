@@ -41,6 +41,13 @@ export interface AudioSettings {
   strength: number;
   /** Alvo de volume final. */
   preset: LoudnessPreset;
+  /**
+   * Ajuste FINO de volume, em dB, aplicado por cima do alvo do preset (−12..+12).
+   * 0 = exatamente o alvo. Existe pro caso de o padrão da plataforma soar alto ou
+   * baixo demais pro gosto/contexto. O limitador continua segurando os picos, então
+   * subir muito comprime em vez de estourar. Ausente (projeto antigo) = 0.
+   */
+  volumeDb?: number;
   /** De-esser (0..1) — dureza dos "s"/"ch". 0 desliga. */
   deesser: number;
   /** Realce de presença em ~3 kHz, em dB (0..6). Deixa a voz "à frente". */
@@ -68,7 +75,11 @@ export const DEFAULT_AUDIO: AudioSettings = {
   preset: "podcast",
   deesser: 0.35,
   presence: 2,
+  volumeDb: 0,
 };
+
+/** Limite do ajuste fino de volume, em dB. */
+export const VOLUME_MAX_DB = 12;
 
 /** Ajustes que afetam a MASTERIZAÇÃO (etapa 2). Mudou aqui = re-render local, sem custo. */
 export function masterParams(a: AudioSettings): string {
@@ -77,6 +88,7 @@ export function masterParams(a: AudioSettings): string {
     a.preset,
     Number(a.deesser.toFixed(2)),
     Number(a.presence.toFixed(1)),
+    Number((a.volumeDb ?? 0).toFixed(1)),
   ]);
 }
 

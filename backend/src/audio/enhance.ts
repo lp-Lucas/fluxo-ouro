@@ -25,7 +25,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runFfmpeg, probeDuration } from "../flow/ffmpeg.js";
 import { isolarVoz, isolamentoDisponivel, type MotorIsolamento, type ResultadoIsolamento } from "./isolate.js";
-import { LOUDNESS, masterParams, type AudioSettings } from "../../../shared/audio.js";
+import { LOUDNESS, masterParams, VOLUME_MAX_DB, type AudioSettings } from "../../../shared/audio.js";
 
 const execFileP = promisify(execFile);
 
@@ -354,7 +354,11 @@ async function masterizar(
 
   // ── passada 2: nível DEPOIS da compressão → é dele que sai o ganho ────────
   const i1 = await medirI(entradas, `${mistura};[mix]${cadeia}`, signal);
-  const ganho = i1 == null ? 0 : alvo.i - i1;
+  // Ganho pro alvo do preset + o ajuste fino do usuário (dB). O ajuste soma ao
+  // ganho, não substitui: +3 dB deixa 3 dB acima do padrão da plataforma, e o
+  // limitador abaixo continua garantindo que não estoure.
+  const volumeDb = Math.max(-VOLUME_MAX_DB, Math.min(VOLUME_MAX_DB, cfg.volumeDb ?? 0));
+  const ganho = (i1 == null ? 0 : alvo.i - i1) + volumeDb;
 
   // Limitador de pico no teto do preset, com folga de 0,3 dB pro pico entre
   // amostras (o alimiter trabalha em pico de amostra, não em true peak).
@@ -371,7 +375,7 @@ async function masterizar(
     "-movflags", "+faststart", outPath,
   ], signal, "audio-masterizar");
 
-  console.log(`[AUDIO] master: fala ${i0?.toFixed(1)} LUFS → limiar ${limiar.toFixed(1)} dB, ganho ${ganho.toFixed(1)} dB`);
+  console.log(`[AUDIO] master: fala ${i0?.toFixed(1)} LUFS → limiar ${limiar.toFixed(1)} dB, ganho ${ganho.toFixed(1)} dB${volumeDb ? ` (inclui ${volumeDb > 0 ? "+" : ""}${volumeDb} dB do usuário)` : ""}`);
   return i1 ?? undefined;
 }
 

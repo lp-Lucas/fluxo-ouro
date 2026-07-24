@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { comBase } from "../../os-session";
-import { DEFAULT_AUDIO, LOUDNESS, masterParams, type AudioSettings, type LoudnessPreset } from "../../../../shared/audio";
+import { DEFAULT_AUDIO, LOUDNESS, VOLUME_MAX_DB, masterParams, type AudioSettings, type LoudnessPreset } from "../../../../shared/audio";
 import { Card, Pill, SliderField } from "../../workspace/ui";
 
 /**
@@ -259,6 +259,13 @@ export function AudioPanel({ audio, onChange, videoFile, videoUrl, projectId, so
                 ))}
               </select>
               <p style={{ fontSize: 12, color: "var(--muted)", margin: "6px 0 16px" }}>{LOUDNESS[cfg.preset].hint}</p>
+
+              <SliderField label="Volume" value={cfg.volumeDb ?? 0}
+                display={(cfg.volumeDb ?? 0) === 0 ? "padrão" : `${(cfg.volumeDb ?? 0) > 0 ? "+" : ""}${(cfg.volumeDb ?? 0).toFixed(0)} dB`}
+                min={-VOLUME_MAX_DB} max={VOLUME_MAX_DB} step={1} onChange={(v) => patch({ volumeDb: v })} />
+              <p style={{ fontSize: 12, color: "var(--muted)", margin: "-4px 0 16px" }}>
+                Ajuste fino sobre o volume da plataforma. Sobe/desce sem estourar — os picos ficam segurados.
+              </p>
 
               <SliderField label="De-esser (suaviza os “s”)" value={cfg.deesser}
                 display={cfg.deesser < 0.01 ? "desligado" : `${Math.round(cfg.deesser * 100)}%`}

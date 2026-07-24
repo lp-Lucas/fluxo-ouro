@@ -481,7 +481,7 @@ export function KaraokePreview({
         />
 
         {/* Música de fundo (invisível): toca junto com o vídeo (loop do trecho). */}
-        {music?.file && <audio ref={musicRef} src={music.file} preload="auto" />}
+        {music?.file && <audio ref={musicRef} src={comBase(music.file)} preload="auto" />}
         {/* Faixa AAC paralela (correção de áudio) — sincronizada ao vídeo ORIGINAL. */}
         {fixAudioUrl && <audio ref={fixAudioRef} src={fixAudioUrl} preload="auto" />}
 

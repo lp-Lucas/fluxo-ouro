@@ -56,7 +56,7 @@ export function MusicPanel({ music, onChange }: { music: Music | undefined; onCh
       ) : (
         <Card>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
-            <audio ref={audioRef} src={music.file} controls style={{ height: 34, flex: 1, minWidth: 220 }}
+            <audio ref={audioRef} src={comBase(music.file)} controls style={{ height: 34, flex: 1, minWidth: 220 }}
               onLoadedMetadata={(e) => setDur(e.currentTarget.duration || 0)}
               onPause={() => setPreviewSeg(false)} />
             <button onClick={() => onChange(undefined)} style={{ fontSize: 12, color: "var(--red)", background: "transparent" }}>

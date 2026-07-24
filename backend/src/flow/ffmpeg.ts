@@ -355,15 +355,14 @@ let outpaintModelOk: string | null = null;
 /**
  * FIT margens VERTICAIS (fonte mais larga que o alvo, ex.: 2:3 -> 9:16) — CONTINUAÇÃO real.
  *
- * As faixas de cima/baixo são o ESPELHO (vflip) da faixa adjacente do próprio design: a linha
- * do espelho que encosta no design é idêntica à borda (emenda invisível) e o gradiente/glow do
- * fundo CONTINUA pra fora (reflete). Preserva a variação horizontal (o glow diagonal) — por
- * isso não vira uma "banda separada" como a média horizontal fazia. O centro é o design EXATO
- * (d0). Determinístico, sem IA, sem custo. Como o topo/base dessas peças é só fundo, o espelho
- * não duplica conteúdo.
+ * SEM IA: as faixas de cima/baixo são o ESPELHO (vflip) da borda adjacente — emenda invisível
+ * e o glow diagonal continua. Determinístico, sem custo. BOM quando a borda é só fundo; RUIM se
+ * houver conteúdo perto da borda (duplica invertido — ex.: texto de cabeça pra baixo no topo).
  *
- * OPCIONAL (OPENROUTER_MARGINS_AI=true + OPENROUTER_API_KEY): a IA (nano-banana) refina as
- * margens a partir dessa base e crava o centro de volta — só pra quem quer fundo gerado.
+ * COM IA (OPENROUTER_MARGINS_AI=true + OPENROUTER_API_KEY): CONTINUAÇÃO real. A base entregue à
+ * IA NÃO é o espelho (senão ela preserva o conteúdo invertido) — é a borda esticada (streak
+ * neutro). O prompt pede extensão natural do fundo, proibindo espelhar/repetir/adicionar texto.
+ * O design é cravado de volta no centro (feather na emenda). Se a IA falhar, cai no espelho.
  */
 async function fitVerticalMargins(input: string, outPath: string, w: number, h: number, src: { w: number; h: number }, signal?: AbortSignal): Promise<void> {
   const imgH = Math.round((src.h * w) / src.w); // altura do design contido na largura w
@@ -374,31 +373,45 @@ async function fitVerticalMargins(input: string, outPath: string, w: number, h: 
   }
   const padTop = Math.floor(diff / 2), padBot = diff - padTop;
   if (padTop > imgH || padBot > imgH) throw new Error("margem maior que a imagem — usa o fallback"); // espelho não cobre
-  const useAI = process.env.OPENROUTER_MARGINS_AI === "true" && !!(process.env.OPENROUTER_API_KEY ?? "").trim();
-  const base = useAI ? outPath + ".base.png" : outPath;
 
-  // BASE = design exato (d0) + margens = ESPELHO da faixa adjacente (preserva o glow diagonal
-  // e casa exato na emenda). Uma passada de ffmpeg.
-  await runFfmpeg([
+  // ESPELHO (determinístico, sem IA): faixa de cima/baixo = vflip da borda adjacente. Emenda
+  // invisível quando a borda é só fundo. Usado SEM IA e como fallback se a IA falhar.
+  const espelho = (out: string) => runFfmpeg([
     "-y", "-i", input, "-filter_complex",
     `[0:v]scale=${w}:${imgH},split=3[d0][d1][d2];` +
     `[d1]crop=${w}:${padTop}:0:0,vflip[t];` +
     `[d2]crop=${w}:${padBot}:0:${imgH - padBot},vflip[b];` +
     `[t][d0][b]vstack=inputs=3[o]`,
-    "-map", "[o]", "-frames:v", "1", base,
+    "-map", "[o]", "-frames:v", "1", out,
   ], signal, "flow-vmargin");
-  if (!useAI) return;
 
-  // OPCIONAL: IA refina as margens; CRAVA o design no centro de volta (protege o miolo). Se
-  // falhar, mantém a base lisa (que já é o resultado desejado).
+  const useAI = process.env.OPENROUTER_MARGINS_AI === "true" && !!(process.env.OPENROUTER_API_KEY ?? "").trim();
+  if (!useAI) { await espelho(outPath); return; }
+
+  // COM IA: CONTINUAÇÃO real da imagem (não espelho/repetição). A base entregue à IA NÃO é o
+  // espelho (senão a IA "preserva" o texto/elemento invertido — o bug do topo duplicado): é a
+  // faixa de 2px da borda ESTICADA (streak neutro, sem conteúdo). A IA estende o fundo natural.
+  const aiBase = outPath + ".aibase.png";
+  await runFfmpeg([
+    "-y", "-i", input, "-filter_complex",
+    `[0:v]scale=${w}:${imgH},split=3[d0][d1][d2];` +
+    `[d1]crop=${w}:2:0:0,scale=${w}:${padTop}[t];` +
+    `[d2]crop=${w}:2:0:${imgH - 2},scale=${w}:${padBot}[b];` +
+    `[t][d0][b]vstack=inputs=3[o]`,
+    "-map", "[o]", "-frames:v", "1", aiBase,
+  ], signal, "flow-vmargin-aibase");
+
+  // IA gera as margens e o design é CRAVADO de volta no centro (feather na emenda, protege o miolo).
   const aiTmp = outPath + ".ai.png";
   try {
     const prompt =
-      "Only repaint the top and bottom margin bands so the background continues perfectly SMOOTHLY " +
-      "to the edges: a flat, seamless continuation of the existing color/gradient — NO shadows, NO " +
-      "vignette, NO glow, NO texture, NO objects, NO text, nothing new. Keep the central artwork " +
-      "EXACTLY as-is. Return the full frame at the same resolution.";
-    fs.writeFileSync(aiTmp, await editImageOpenRouter(base, prompt, signal));
+      "The top and bottom bands of this image are a rough placeholder. Repaint ONLY those top and " +
+      "bottom bands so the BACKGROUND CONTINUES naturally and seamlessly BEYOND the original image — " +
+      "match the exact color, gradient, glow and lighting at the seam, as if the scene extended further. " +
+      "STRICT: never mirror, flip, tile, repeat or duplicate ANY element (no upside-down copies of text " +
+      "or shapes); never add text, logos, faces, shapes or new objects — the bands are BACKGROUND ONLY. " +
+      "Keep the central area EXACTLY unchanged. Return the full frame at the same resolution.";
+    fs.writeFileSync(aiTmp, await editImageOpenRouter(aiBase, prompt, signal));
     const F = 20;
     await runFfmpeg([
       "-y", "-i", aiTmp, "-i", input, "-filter_complex",
@@ -409,10 +422,10 @@ async function fitVerticalMargins(input: string, outPath: string, w: number, h: 
       "-map", "[o]", "-frames:v", "1", outPath,
     ], signal, "flow-vmargin-ai");
   } catch (e) {
-    console.error("[FLOW] margens IA falhou, mantendo extensão lisa:", (e as Error).message);
-    fs.copyFileSync(base, outPath);
+    console.error("[FLOW] margens IA falhou, usando espelho:", (e as Error).message);
+    await espelho(outPath);
   } finally {
-    fs.rm(aiTmp, () => {}); fs.rm(base, () => {});
+    fs.rm(aiTmp, () => {}); fs.rm(aiBase, () => {});
   }
 }
 

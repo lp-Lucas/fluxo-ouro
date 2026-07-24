@@ -355,13 +355,13 @@ let outpaintModelOk: string | null = null;
 /**
  * FIT margens VERTICAIS (fonte mais larga que o alvo, ex.: 2:3 -> 9:16) — CONTINUAÇÃO real.
  *
- * PADRÃO (sem IA): a faixa de cima/baixo é a BORDA do design ESTICADA (streak) — continua a
- * cor/glow da borda SEM DUPLICAR conteúdo. (O espelho/vflip antigo duplicava texto/elementos
- * de cabeça pra baixo no topo — o bug reportado.) Determinístico, sem custo.
+ * COM CHAVE OpenRouter (PADRÃO): o GEMINI refaz a imagem em 9:16 (continuação natural do fundo)
+ * e o design do GPT é CRAVADO POR CIMA, no centro (feather na emenda) — centro pixel-exato do
+ * GPT, margens coerentes do Gemini. Desliga com OPENROUTER_MARGINS_AI=false.
  *
- * COM IA (OPENROUTER_MARGINS_AI=true + OPENROUTER_API_KEY): CONTINUAÇÃO real. Parte da mesma
- * base sem duplicação (streak) e o prompt pede extensão natural do fundo, proibindo espelhar/
- * repetir/adicionar texto. O design é cravado de volta no centro. Se a IA falhar, cai no streak.
+ * SEM chave (ou desligado): extensão por STREAK (borda esticada) — continua a cor/glow SEM
+ * duplicar conteúdo. (O espelho/vflip antigo duplicava texto de cabeça pra baixo — o bug antigo.)
+ * É também o fallback se o Gemini falhar. Determinístico, sem custo.
  */
 async function fitVerticalMargins(input: string, outPath: string, w: number, h: number, src: { w: number; h: number }, signal?: AbortSignal): Promise<void> {
   const imgH = Math.round((src.h * w) / src.w); // altura do design contido na largura w
@@ -386,23 +386,27 @@ async function fitVerticalMargins(input: string, outPath: string, w: number, h: 
     "-map", "[o]", "-frames:v", "1", out,
   ], signal, "flow-vmargin");
 
-  const useAI = process.env.OPENROUTER_MARGINS_AI === "true" && !!(process.env.OPENROUTER_API_KEY ?? "").trim();
+  // GEMINI por PADRÃO quando há chave do OpenRouter (a mesma usada pra gerar o design): o
+  // Gemini refaz a imagem em 9:16 e o design do GPT é cravado POR CIMA (centro exato). Só cai
+  // no streak se NÃO houver chave, ou se explicitamente desligado (OPENROUTER_MARGINS_AI=false).
+  const useAI = !!(process.env.OPENROUTER_API_KEY ?? "").trim() && process.env.OPENROUTER_MARGINS_AI !== "false";
   if (!useAI) { await extensao(outPath); return; }
 
-  // COM IA: continuação natural do fundo, partindo da base SEM duplicação (a extensão streak).
+  // BASE p/ o Gemini: o design do GPT num canvas 9:16 (margens = streak, só pra o Gemini
+  // receber a proporção certa e ter o quê estender). O Gemini gera o 9:16 coerente.
   const aiBase = outPath + ".aibase.png";
   await extensao(aiBase);
 
-  // IA gera as margens e o design é CRAVADO de volta no centro (feather na emenda, protege o miolo).
+  // Gemini gera o FUNDO 9:16; o design do GPT é CRAVADO de volta no centro (feather na emenda).
   const aiTmp = outPath + ".ai.png";
   try {
     const prompt =
-      "The top and bottom bands of this image are a rough placeholder. Repaint ONLY those top and " +
-      "bottom bands so the BACKGROUND CONTINUES naturally and seamlessly BEYOND the original image — " +
-      "match the exact color, gradient, glow and lighting at the seam, as if the scene extended further. " +
-      "STRICT: never mirror, flip, tile, repeat or duplicate ANY element (no upside-down copies of text " +
-      "or shapes); never add text, logos, faces, shapes or new objects — the bands are BACKGROUND ONLY. " +
-      "Keep the central area EXACTLY unchanged. Return the full frame at the same resolution.";
+      "This is a vertical 9:16 image whose TOP and BOTTOM bands are a rough placeholder. Extend the " +
+      "scene naturally to fill those bands so the whole frame becomes ONE coherent, continuous image — " +
+      "continue the background, color, gradient, glow and lighting as if the scene extended further up " +
+      "and down. STRICT: never mirror, flip, tile, repeat or duplicate ANY element (no upside-down copies " +
+      "of text or shapes); never add any text, logos, faces or new objects — the bands are background/" +
+      "scene continuation ONLY. Keep the central content in place. Return the full vertical 9:16 image.";
     fs.writeFileSync(aiTmp, await editImageOpenRouter(aiBase, prompt, signal));
     const F = 20;
     await runFfmpeg([

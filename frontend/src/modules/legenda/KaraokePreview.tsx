@@ -40,6 +40,7 @@ export function KaraokePreview({
   durationSec,
   width: docW,
   height: docH,
+  onSetDims,
   projectId,
   sourceAsset,
   transcript,
@@ -70,6 +71,8 @@ export function KaraokePreview({
   /** dimensões do projeto (JSON, rotação já aplicada) — fonte autoritativa do PALCO. */
   width?: number;
   height?: number;
+  /** ajusta a proporção do projeto (seletor no header do preview) — corrige e salva. */
+  onSetDims?: (w: number, h: number) => void;
   /** projeto atual: com projectId + sourceAsset o proxy é gerado SERVER-SIDE (sem upload). */
   projectId?: string | null;
   sourceAsset?: string;
@@ -430,6 +433,24 @@ export function KaraokePreview({
             onChange={(e) => { setUseProxy(e.target.checked); localStorage.setItem("fo-preview-proxy", e.target.checked ? "1" : "0"); }} />
           proxy{useProxy && proxyUrl ? " ✓" : useProxy ? "…" : ""}
         </label>
+        {onSetDims && (() => {
+          const ar = docW && docH ? docW / docH : 9 / 16;
+          const key = Math.abs(ar - 9 / 16) < 0.1 ? "9:16" : Math.abs(ar - 16 / 9) < 0.1 ? "16:9" : Math.abs(ar - 1) < 0.1 ? "1:1" : "custom";
+          const DIMS: Record<string, [number, number]> = { "9:16": [1080, 1920], "16:9": [1920, 1080], "1:1": [1080, 1080] };
+          return (
+            <label title="proporção do vídeo (palco) — conserta projeto que ficou na proporção errada (ex.: 16:9 num vídeo 9:16)"
+              style={{ fontSize: 11.5, color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              proporção
+              <select value={key} style={{ fontSize: 11.5 }}
+                onChange={(e) => { const d = DIMS[e.target.value]; if (d) onSetDims(d[0], d[1]); }}>
+                {key === "custom" && <option value="custom">atual</option>}
+                <option value="9:16">9:16 (vertical)</option>
+                <option value="16:9">16:9 (horizontal)</option>
+                <option value="1:1">1:1 (quadrado)</option>
+              </select>
+            </label>
+          );
+        })()}
         <label style={{ fontSize: 11.5, color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: 8 }}>
           prévia
           <select value={String(resScale)} style={{ fontSize: 11.5 }}

@@ -364,6 +364,7 @@ export function App() {
         const dw = pf.document.width || 1, dh = pf.document.height || 1;
         if (Math.abs(dw / dh - dims.w / dims.h) > 0.02) {
           setDocExtra((e) => (e ? { ...e, width: dims.w, height: dims.h } : e));
+          setTimeout(() => salvar(), 200); // persiste a correção (não recorre a cada abertura)
         }
       }).catch(() => { /* sem metadata: mantém o que veio do projeto */ });
       fetch(url).then((vr) => (vr.ok ? vr.blob() : null)).then((blob) => {
@@ -654,7 +655,9 @@ export function App() {
             background: "var(--panel)", color: "var(--text)", borderRadius: 12, border: "1px solid var(--border)",
             padding: 12,
           }}>
-            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} durationSec={docExtra?.durationSec} width={docExtra?.width} height={docExtra?.height} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
+            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} durationSec={docExtra?.durationSec} width={docExtra?.width} height={docExtra?.height}
+              onSetDims={(w, h) => { setDocExtra((e) => (e ? { ...e, width: w, height: h } : e)); setTimeout(() => salvar(), 120); }}
+              projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
               cuts={cuts} onCutsChange={setCuts} captions={captions} onCaptionsChange={setCaptions}
               zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
               chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}

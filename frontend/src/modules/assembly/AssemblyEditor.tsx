@@ -344,8 +344,12 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
     const cfg = confirmar; if (!cfg) return;
     setConfirmar(null);
     const { mode, novo, regioes } = cfg;
-    setBusy(mode === "reset" ? "Unindo e re-transcrevendo tudo… (pode demorar)"
-      : regioes.length ? "Unindo e transcrevendo o material novo…" : "Unindo o vídeo…");
+    // mostra a CONTAGEM de clipes que vão ser unidos — diagnóstico imediato (se aparecer
+    // "1 clipe" mas você adicionou vários, eles entraram como B-ROLL, não na principal).
+    const nMain = novo.main.length, nBroll = novo.brolls.length;
+    setBusy(mode === "reset"
+      ? `Unindo ${nMain} clipe(s) e re-transcrevendo tudo… (pode demorar)`
+      : `Unindo ${nMain} clipe(s)${nBroll ? ` + ${nBroll} b-roll` : ""}${regioes.length ? " e transcrevendo o material novo" : ""}…`);
     try {
       const r = await fetch(comBase("/api/assembly/flatten"), {
         method: "POST", headers: { "Content-Type": "application/json" },

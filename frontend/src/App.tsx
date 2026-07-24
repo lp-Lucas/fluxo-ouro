@@ -91,6 +91,7 @@ export function App() {
   const [assembly, setAssembly] = useState<Assembly | undefined>(undefined); // Montador de origem
   const [showAssembly, setShowAssembly] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+  const [appAviso, setAppAviso] = useState<string | null>(null); // aviso/erro visível (alert nativo some no iframe)
   const [saveState, setSaveState] = useState<SaveState>("salvo");
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
 
@@ -385,31 +386,43 @@ export function App() {
     setShowAssembly(false);
     setBusy("Aplicando o novo vídeo…");
     try {
-      const vr = await fetch(comBase(`/uploads/${result.videoFile}`));
+      const vurl = comBase(`/uploads/${result.videoFile}`);
+      const vr = await fetch(vurl);
+      if (!vr.ok) throw new Error(`o vídeo unido não foi encontrado no servidor (${vr.status}).`);
       const blob = await vr.blob();
       const file = new File([blob], "video.mp4", { type: blob.type || "video/mp4" });
       const d = latest.current.doc;
+      // 1) APLICA O VÍDEO UNIDO SEMPRE — mesmo que a realocação falhe, o vídeo novo (com
+      //    TODOS os clipes) tem que entrar. Antes o setVideoFile vinha DEPOIS do remap: se
+      //    o remap lançasse, o vídeo velho (1º clipe) ficava e o erro sumia no iframe.
       setDocExtra({ sourceVideo: result.videoFile, durationSec: result.durationSec, width: result.width, height: result.height });
       setAssembly(asm);
+      setVideoFile(file);
+      setVideoUrl(vurl);
+      setLut(null); setLutName(null); setLutText(null);
+      // 2) TIMING: reset (recomeçar do zero) ou REALOCA. Se o remap falhar, cai num reset
+      //    seguro — o vídeo já está aplicado; só o timing volta ao zero.
       if (opts.mode === "reset") {
         reset({ transcript: ensureWordIds(result.transcript as TranscriptSegment[]), cuts: [], zooms: [], popups: [], captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, flow: undefined, music: d.music, audio: d.audio, captions: [] });
       } else {
-        // REALOCA: leva cortes/legendas/zooms/popups/FLOW do tempo antigo pro novo pelo
-        // mapa de material do Montador. Só o que caiu em trecho removido é descartado.
-        const r = remapDoc(
-          { transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captions: d.captions, flow: d.flow },
-          mainSpans(opts.oldAssembly), mainSpans(asm),
-          ensureWordIds(result.newSegments ?? []),
-        );
-        reset({ transcript: ensureWordIds(r.transcript), cuts: r.cuts, zooms: r.zooms, popups: r.popups, captions: r.captions, flow: r.flow, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, music: d.music, audio: d.audio });
-        const perdas = r.dropped.words + r.dropped.cuts + r.dropped.popups + r.dropped.captions + r.dropped.phrases;
-        if (perdas > 0) console.log(`[MONTADOR] realocado — descartado em trechos removidos: ${JSON.stringify(r.dropped)}`);
+        try {
+          const r = remapDoc(
+            { transcript: d.transcript, cuts: d.cuts, zooms: d.zooms, popups: d.popups, captions: d.captions, flow: d.flow },
+            mainSpans(opts.oldAssembly), mainSpans(asm),
+            ensureWordIds(result.newSegments ?? []),
+          );
+          reset({ transcript: ensureWordIds(r.transcript), cuts: r.cuts, zooms: r.zooms, popups: r.popups, captions: r.captions, flow: r.flow, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, music: d.music, audio: d.audio });
+          const perdas = r.dropped.words + r.dropped.cuts + r.dropped.popups + r.dropped.captions + r.dropped.phrases;
+          if (perdas > 0) console.log(`[MONTADOR] realocado — descartado em trechos removidos: ${JSON.stringify(r.dropped)}`);
+        } catch (err) {
+          console.error("[MONTADOR] realocação falhou; vídeo aplicado, timing zerado:", err);
+          reset({ transcript: ensureWordIds(d.transcript), cuts: [], zooms: [], popups: [], captions: [], flow: d.flow, captionStyle: d.captionStyle, copy: d.copy, color: d.color, chroma: d.chroma, music: d.music, audio: d.audio });
+          setAppAviso("O vídeo unido foi aplicado, mas a realocação automática falhou — os cortes/legendas foram limpos (o vídeo está correto).");
+        }
       }
-      setVideoFile(file);
-      setLut(null); setLutName(null); setLutText(null);
       setBusy(null);
       setTimeout(() => salvar(), 200); // persiste (move o MP4 + clipes pra assets/)
-    } catch (e) { setBusy(null); alert("Erro ao aplicar o novo vídeo: " + (e as Error).message); }
+    } catch (e) { setBusy(null); setAppAviso("Erro ao aplicar o vídeo unido: " + (e as Error).message); }
   }
 
   // Marca "não salvo" quando o documento muda (após ter um projeto aberto).
@@ -537,6 +550,15 @@ export function App() {
         <AssemblyEditor projectId={projectId} width={docExtra.width} height={docExtra.height}
           sourceVideoUrl={docExtra.sourceVideo} sourceDurationSec={docExtra.durationSec}
           initial={assembly} onConclude={onAssemblyConcluir} onClose={() => setShowAssembly(false)} />
+      )}
+
+      {/* AVISO/ERRO global — visível (o alert nativo é suprimido dentro do iframe do OS) */}
+      {appAviso && (
+        <div style={{ position: "sticky", top: 0, zIndex: 60, display: "flex", alignItems: "center", gap: 12, padding: "10px 16px",
+          background: "rgba(230,70,70,.14)", borderBottom: "1px solid var(--red)", color: "var(--red)", fontSize: 13 }}>
+          <span style={{ flex: 1 }}>{appAviso}</span>
+          <button onClick={() => setAppAviso(null)} style={{ background: "transparent", border: "1px solid var(--red)", color: "var(--red)", borderRadius: 8, padding: "3px 12px", fontSize: 12, cursor: "pointer" }}>OK</button>
+        </div>
       )}
 
       {/* BARRA SUPERIOR — projeto, salvar, undo/redo. Compacta, sem poluição. */}

@@ -131,7 +131,11 @@ export async function flattenAssembly(
     "-y", ...inputs,
     "-filter_complex", filters.join(";"),
     "-map", curV, "-map", "[ca]",
-    "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+    // VELOCIDADE: este MP4 é o SOURCE de edição (o export re-encoda depois) — não precisa
+    // do preset lento. veryfast + crf 20 corta o tempo do Concluir em ~3-5x (decisivo na
+    // KVM8, CPU limitada por cgroup) com qualidade praticamente igual e arquivo menor
+    // (download mais rápido no front). faststart pra abrir/seek instantâneo.
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
     "-c:a", "aac", "-b:a", "192k",
     "-movflags", "+faststart",

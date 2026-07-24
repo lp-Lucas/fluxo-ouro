@@ -37,6 +37,7 @@ function capFullHD(w: number, h: number) {
 export function KaraokePreview({
   videoFile,
   videoUrl,
+  durationSec,
   projectId,
   sourceAsset,
   transcript,
@@ -62,6 +63,8 @@ export function KaraokePreview({
   videoFile: File | null;
   /** URL do vídeo (servidor/blob) — o preview STREAMA daqui quando não há blob local. */
   videoUrl: string;
+  /** duração do projeto (JSON) — semeia o preview/timeline SEM esperar o metadata do <video>. */
+  durationSec?: number;
   /** projeto atual: com projectId + sourceAsset o proxy é gerado SERVER-SIDE (sem upload). */
   projectId?: string | null;
   sourceAsset?: string;
@@ -97,7 +100,16 @@ export function KaraokePreview({
   const clock = useRef(new FrameClock()).current;
   const [zoomScale, setZoomScale] = useState(1);   // degrau atual (muda a cada poucos segundos)
   const [matteOn, setMatteOn] = useState(false);   // janela do "atrás da pessoa" (RVM)
-  const [duration, setDuration] = useState(0);
+  // Semeia a duração com a do PROJETO (já conhecida): PlayerBar e timeline aparecem na
+  // hora, sem esperar o `loadedmetadata` do <video> (que, sem faststart, só chega depois
+  // de baixar o arquivo inteiro). O metadata real, quando chega, apenas confirma o valor.
+  const [duration, setDuration] = useState(durationSec ?? 0);
+  useEffect(() => { if (durationSec && durationSec > 0) setDuration((d) => (d > 0 ? d : durationSec)); }, [durationSec]);
+  // publica a duração semeada no transporte no mount → a timeline fixa monta imediatamente.
+  useEffect(() => {
+    if (transport && durationSec && durationSec > 0) transport.publish({ time: 0, duration: durationSec, playing: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transport, durationSec]);
   const [playing, setPlaying] = useState(false);
   // P2 (qualidade do preview): fator de resolução dos canvas de PROCESSAMENTO (WebGL/matte).
   // Total = cap FullHD (igual export); ½ = 4× menos pixels por frame; ¼ = 16× menos.

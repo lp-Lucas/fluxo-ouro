@@ -590,7 +590,7 @@ export function App() {
             background: "var(--panel)", color: "var(--text)", borderRadius: 12, border: "1px solid var(--border)",
             padding: 12,
           }}>
-            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
+            <KaraokePreview videoFile={videoFile} videoUrl={videoUrl} durationSec={docExtra?.durationSec} projectId={projectId} sourceAsset={docExtra?.sourceVideo?.replace(/.*\//, "")} transcript={transcript} style={captionStyle} onStyleChange={setCaptionStyle}
               cuts={cuts} onCutsChange={setCuts} captions={captions} onCaptionsChange={setCaptions}
               zooms={zooms} popups={popups} onAddCuts={addCuts} color={effectiveColor} lut={lut} music={music}
               chroma={chroma} eyedropper={eyedropper} showMask={showMask} hideStyleControls transport={transport}
@@ -664,10 +664,10 @@ export function App() {
 
             {/* TIMELINE — agora DENTRO da coluna direita, abaixo do CONFIGS (não mais barra
                 de largura total). O preview à esquerda passa a ter altura cheia. Mesmo componente. */}
-            {videoFile && (
+            {docExtra && (
               <div style={{ flex: "0 0 auto", maxHeight: "36%", overflow: "hidden",
                 background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: "8px 12px 10px" }}>
-                <TimelineDock bus={transport} videoFile={videoFile} cuts={cuts} onCutsChange={setCuts}
+                <TimelineDock bus={transport} videoFile={videoFile} fallbackDuration={docExtra.durationSec} cuts={cuts} onCutsChange={setCuts}
                   words={transcript.flatMap((s) => s.words)}
                   captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
                   motionGroups={motionGroups}
@@ -685,8 +685,8 @@ export function App() {
 
 /** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
  *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
-function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motionGroups, onMotionMove, onClipResize }: {
-  bus: TransportBus; videoFile: File; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
+function TimelineDock({ bus, videoFile, fallbackDuration, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motionGroups, onMotionMove, onClipResize }: {
+  bus: TransportBus; videoFile: File | null; fallbackDuration: number; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
   captions: Caption[]; onCaptionsChange: (c: Caption[]) => void; transcript: TranscriptSegment[]; maxWords?: number;
   motionGroups: { id: string; at: number; clips: { phraseId: string; duration: number; label?: string; raw?: number; video?: string }[] }[];
   onMotionMove: (id: string, at: number) => void;
@@ -701,9 +701,12 @@ function TimelineDock({ bus, videoFile, cuts, onCutsChange, words, captions, onC
     get time() { return bus.state.time; },
     subscribe: (f: (t: number) => void) => bus.subscribe((s: TransportState) => f(s.time)),
   }), [bus]);
-  if (meta.duration <= 0) return null;
+  // duração do PROJETO (JSON) primeiro — a timeline aparece na hora, sem esperar o
+  // metadata do <video> (que, sem faststart, só chega após baixar o arquivo inteiro).
+  const dur = meta.duration > 0 ? meta.duration : fallbackDuration;
+  if (dur <= 0) return null;
   return (
-    <CutTimeline videoFile={videoFile} duration={meta.duration} cuts={cuts} onCutsChange={onCutsChange}
+    <CutTimeline videoFile={videoFile} duration={dur} cuts={cuts} onCutsChange={onCutsChange}
       words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing}
       captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords}
       motionGroups={motionGroups} onMotionMove={onMotionMove} onClipResize={onClipResize} />

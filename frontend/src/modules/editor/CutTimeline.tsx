@@ -68,11 +68,12 @@ const fmtRuler = (t: number) => {
 };
 
 /** Decodifica o áudio do arquivo e devolve picos normalizados por bucket. */
-function useWaveform(file: File, buckets: number): Float32Array | null {
+function useWaveform(file: File | null, buckets: number): Float32Array | null {
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   useEffect(() => {
     let cancel = false;
     setPeaks(null);
+    if (!file) return; // sem blob ainda (abrindo projeto, streamando): a timeline já aparece, a onda entra depois
     (async () => {
       try {
         const buf = await file.arrayBuffer();
@@ -115,7 +116,7 @@ export function CutTimeline({
   videoFile, duration, cuts, onCutsChange, words, currentTime = 0, clock, onSeek, onPlayKept, playing,
   captions, onCaptionsChange, transcript, maxWords = 7, motionGroups, onMotionMove, onClipResize,
 }: {
-  videoFile: File;
+  videoFile: File | null;
   duration: number;
   cuts: Cut[];
   onCutsChange: (cuts: Cut[]) => void;

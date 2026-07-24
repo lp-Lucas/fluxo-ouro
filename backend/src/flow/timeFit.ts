@@ -56,10 +56,16 @@ export async function timeFit(
     vf = `${REV}setpts=PTS/${speed.toFixed(6)},${SCALE}`;
   }
 
-  if (!fs.existsSync(outputPath)) {
+  // Cache VÁLIDO: reusa só se o fit existe E abre (duração > 0). Um fit truncado (ffmpeg morto
+  // no meio — ex.: OOM/cgroup) fica com "moov atom not found" e derrubava o concat/probe depois.
+  const cacheOk = fs.existsSync(outputPath) && (await probeDuration(outputPath).catch(() => 0)) > 0;
+  if (!cacheOk) {
+    // ESCRITA ATÔMICA: grava num .part e renomeia só no fim — interrupção nunca deixa fit corrompido no cache.
+    const part = outputPath + ".part.mp4";
     await runFfmpeg([
-      "-y", "-i", rawVideoPath, "-vf", vf, "-t", target.toFixed(3), ...OUT, outputPath,
+      "-y", "-i", rawVideoPath, "-vf", vf, "-t", target.toFixed(3), ...OUT, part,
     ], signal, "flow-timefit");
+    fs.renameSync(part, outputPath);
   }
 
   const effSpeed = strategy === "hold" ? 0.5 : speed;

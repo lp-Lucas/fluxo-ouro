@@ -1532,19 +1532,31 @@ app.post("/api/flow/concat-moment", (req, res) => {
     if (!list.length) { res.status(400).json({ error: "nenhum vídeo para juntar." }); return; }
     const jobId = startFlowJob(async (_job, signal) => {
       const paths = list.map((u) => flowAsset(String(projectId), path.basename(new URL(u, "http://x").pathname)).fsPath);
-      for (const p of paths) if (!fs.existsSync(p)) throw new Error(`clipe não encontrado: ${path.basename(p)} — gere/re-sincronize os vídeos antes.`);
+      for (const p of paths) {
+        if (!fs.existsSync(p)) throw new Error(`clipe não encontrado: ${path.basename(p)} — gere/re-sincronize os vídeos antes.`);
+        // Valida cada clipe: um fit TRUNCADO (ffmpeg morto no meio — ex.: OOM/cgroup na KVM8)
+        // fica com "moov atom not found" e derruba o concat. Avisa claro (sem apagar, pra não
+        // deixar referência quebrada) — "Re-sincronizar FLOW" regenera os fits corrompidos.
+        const din = await probeDuration(p).catch(() => 0);
+        if (!(din > 0)) throw new Error(`clipe corrompido: ${path.basename(p)} — clique em "Re-sincronizar FLOW" pra regerar os motions.`);
+      }
       // NOME ESTÁVEL por momento (sem hash): a URL do popup nunca muda, então undo/save
       // nunca apontam pra um arquivo apagado. Sempre RE-GERA (os clipes podem ter mudado).
       const out = flowAsset(String(projectId), `moment-${String(momentId).replace(/[^a-z0-9_-]/gi, "")}.mp4`);
+      // ESCRITA ATÔMICA: grava num .part e só renomeia se sair válido — interrupção NUNCA
+      // deixa um moment-*.mp4 corrompido no cache (era a causa do "moov atom not found").
+      const part = out.fsPath + ".part.mp4";
       const inputs = paths.flatMap((p) => ["-i", p]);
       const filter = paths.map((_, i) => `[${i}:v]`).join("") + `concat=n=${paths.length}:v=1:a=0[v]`;
       await runFfmpeg([
         "-y", ...inputs, "-filter_complex", filter, "-map", "[v]",
         "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
         "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-        "-movflags", "+faststart", out.fsPath,
+        "-movflags", "+faststart", part,
       ], signal, "flow-concat");
-      const duration = await probeDuration(out.fsPath);
+      const duration = await probeDuration(part).catch(() => 0);
+      if (!(duration > 0)) { fs.rm(part, () => {}); throw new Error("a junção do motion saiu corrompida — tente de novo."); }
+      fs.renameSync(part, out.fsPath);
       console.log(`[FLOW] concat-moment ${momentId}: ${paths.length} clipes → ${duration.toFixed(2)}s`);
       return { videoPath: out.url, duration };
     });

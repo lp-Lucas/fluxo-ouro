@@ -60,6 +60,8 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   const [busy, setBusy] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState(true); // guia fixa do frame 9:16 no preview
   const [resetTudo, setResetTudo] = useState(false); // "recomeçar do zero" (re-transcrever e limpar)
+  const [erro, setErro] = useState<string | null>(null); // banner de erro (não usa alert nativo — some no iframe)
+  const [confirmar, setConfirmar] = useState<null | { mode: ConcludeMode; novo: Assembly; regioes: Array<{ start: number; end: number }>; novoSeg: number }>(null);
   const [, tick] = useReducer((n: number) => n + 1, 0);
 
   /**
@@ -231,7 +233,7 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
         if (!r.ok) throw new Error(d.error ?? "Falha ao enviar mídia");
         setPool((p) => [...p, { asset: `/uploads/${d.asset}`, fileName: d.fileName ?? f.name, durationSec: d.durationSec || 1, width: d.width, height: d.height }]);
       }
-    } catch (e) { alert("Erro: " + (e as Error).message); } finally { setBusy(null); }
+    } catch (e) { setErro("Erro ao enviar mídia: " + (e as Error).message); } finally { setBusy(null); }
   };
   const addToMain = (it: PoolItem) => {
     setMain((m) => [...m, { id: uid(), asset: it.asset, inPoint: 0, outPoint: it.durationSec, sourceDurationSec: it.durationSec, transform: { ...DEFAULT_TRANSFORM } }]);
@@ -323,31 +325,25 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
   }, [sel, playhead, main, brolls, offsets, playing]);
 
   // ---------- concluir ----------
-  const concluir = async () => {
-    if (!main.length) { alert("A pista principal precisa de ao menos um clipe."); return; }
-    const novo = asm();
-    const oldSpans = mainSpans(oldAssembly), newSpans = mainSpans(novo);
-    const regioes = newMaterialRegions(oldSpans, newSpans);
-    const mode: "remap" | "reset" = resetTudo ? "reset" : "remap";
-
-    if (mode === "reset") {
-      if (!confirm("RECOMEÇAR DO ZERO: vai refazer o vídeo de origem e RE-TRANSCREVER tudo.\n\nOs cortes, legendas e FLOW atuais serão APAGADOS.\n\nContinuar?")) return;
-    } else {
+  // IMPORTANTE: nada de confirm()/alert() nativos aqui. Dentro do iframe do OS o navegador
+  // pode SUPRIMIR diálogos (o checkbox "impedir mais diálogos") — o confirm volta false
+  // silencioso e o Concluir "nao fazia nada". A confirmação é um modal in-app; o erro vira
+  // um banner visível. Assim funciona igual no OS e no standalone.
+  const pedirConcluir = () => {
+    setErro(null);
+    if (!main.length) { setErro("A pista principal precisa de ao menos um clipe."); return; }
+    try {
+      const novo = asm();
+      const regioes = newMaterialRegions(mainSpans(oldAssembly), mainSpans(novo));
+      const mode: "remap" | "reset" = resetTudo ? "reset" : "remap";
       const novoSeg = regioes.reduce((a, r) => a + (r.end - r.start), 0);
-      const msg = [
-        "Concluir vai refazer o vídeo de origem e REALOCAR o projeto.",
-        "",
-        "Cortes, legendas, zooms, popups e FLOW são reposicionados no tempo novo — nada é resetado.",
-        novoSeg > 0.15
-          ? `Material novo (${novoSeg.toFixed(1)}s) será transcrito e encaixado.`
-          : "Nenhum material novo — nada precisa ser transcrito.",
-        "Só o que estava em trechos REMOVIDOS é descartado.",
-        "",
-        "Continuar?",
-      ].join("\n");
-      if (!confirm(msg)) return;
-    }
-
+      setConfirmar({ mode, novo, regioes, novoSeg });
+    } catch (e) { setErro("Não consegui preparar o Concluir: " + (e as Error).message); }
+  };
+  const executarConcluir = async () => {
+    const cfg = confirmar; if (!cfg) return;
+    setConfirmar(null);
+    const { mode, novo, regioes } = cfg;
     setBusy(mode === "reset" ? "Unindo e re-transcrevendo tudo… (pode demorar)"
       : regioes.length ? "Unindo e transcrevendo o material novo…" : "Unindo o vídeo…");
     try {
@@ -358,7 +354,7 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "Falha ao unir");
       onConclude(d as FlattenResult, novo, { mode, oldAssembly });
-    } catch (e) { setBusy(null); alert("Erro ao concluir: " + (e as Error).message); }
+    } catch (e) { setBusy(null); setErro("Erro ao concluir: " + (e as Error).message); }
   };
 
   // ---------- render de um clipe ----------
@@ -422,9 +418,17 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
             <input type="checkbox" checked={resetTudo} onChange={(e) => setResetTudo(e.target.checked)} />
             recomeçar do zero
           </label>
-          <button onClick={concluir} disabled={!!busy} style={{ background: "var(--accent)", color: "#141414", fontWeight: 600, fontSize: 13, padding: "8px 20px", borderRadius: 12, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? .5 : 1 }}>Concluir</button>
+          <button onClick={pedirConcluir} disabled={!!busy} style={{ background: "var(--accent)", color: "#141414", fontWeight: 600, fontSize: 13, padding: "8px 20px", borderRadius: 12, border: "none", cursor: busy ? "default" : "pointer", opacity: busy ? .5 : 1 }}>Concluir</button>
           <button onClick={onClose} disabled={!!busy} style={{ fontSize: 13, padding: "8px 16px", borderRadius: 12 }}>Fechar</button>
         </div>
+
+        {/* banner de erro (substitui o alert nativo, que some dentro do iframe do OS) */}
+        {erro && (
+          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 16px", background: "rgba(230,70,70,.12)", borderBottom: "1px solid var(--red)", color: "var(--red)", fontSize: 12.5 }}>
+            <span style={{ flex: 1 }}>{erro}</span>
+            <button onClick={() => setErro(null)} style={{ background: "transparent", border: "1px solid var(--red)", color: "var(--red)", borderRadius: 8, padding: "2px 10px", fontSize: 12, cursor: "pointer" }}>OK</button>
+          </div>
+        )}
 
         <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
           {/* CENTRO: mídia (horizontal) + controles + timeline */}
@@ -581,6 +585,37 @@ export function AssemblyEditor({ projectId, width, height, sourceVideoUrl, sourc
             })()}
           </div>
         </div>
+
+        {/* CONFIRMAÇÃO in-app do Concluir (substitui o confirm() nativo, que é suprimido no iframe) */}
+        {confirmar && (
+          <div onPointerDown={(e) => e.stopPropagation()}
+            style={{ position: "absolute", inset: 0, zIndex: 20, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ width: "min(520px, 92%)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 14, padding: "20px 22px", boxShadow: "0 20px 60px rgba(0,0,0,.5)" }}>
+              <strong style={{ fontSize: 15, display: "block", marginBottom: 12, color: confirmar.mode === "reset" ? "var(--red)" : "var(--text)" }}>
+                {confirmar.mode === "reset" ? "Recomeçar do zero?" : "Concluir e aplicar?"}
+              </strong>
+              <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.55 }}>
+                {confirmar.mode === "reset" ? (
+                  <>Vai refazer o vídeo de origem e <strong style={{ color: "var(--text)" }}>RE-TRANSCREVER tudo</strong>. Os cortes, legendas e FLOW atuais serão <strong style={{ color: "var(--red)" }}>APAGADOS</strong>.</>
+                ) : (
+                  <>
+                    O vídeo de origem é refeito e o projeto é <strong style={{ color: "var(--text)" }}>realocado</strong> — cortes, legendas, zooms, popups e FLOW são reposicionados no tempo novo, nada é resetado.<br />
+                    {confirmar.novoSeg > 0.15
+                      ? <>Material novo (<strong style={{ color: "var(--text)" }}>{confirmar.novoSeg.toFixed(1)}s</strong>) será transcrito e encaixado.</>
+                      : <>Nenhum material novo — nada precisa ser transcrito.</>}<br />
+                    Só o que estava em trechos removidos é descartado.
+                  </>
+                )}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+                <button onClick={() => setConfirmar(null)} style={btn({ padding: "8px 16px" })}>Cancelar</button>
+                <button onClick={executarConcluir} style={{ background: confirmar.mode === "reset" ? "var(--red)" : "var(--accent)", color: confirmar.mode === "reset" ? "#fff" : "#141414", fontWeight: 600, fontSize: 13, padding: "8px 20px", borderRadius: 10, border: "none", cursor: "pointer" }}>
+                  {confirmar.mode === "reset" ? "Apagar e recomeçar" : "Concluir"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>,
     document.body,

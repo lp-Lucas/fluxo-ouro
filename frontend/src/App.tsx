@@ -689,7 +689,8 @@ export function App() {
             {docExtra && (
               <div style={{ flex: "0 0 auto", maxHeight: "36%", overflow: "hidden",
                 background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 12, padding: "8px 12px 10px" }}>
-                <TimelineDock bus={transport} videoFile={videoFile} fallbackDuration={docExtra.durationSec} cuts={cuts} onCutsChange={setCuts}
+                <TimelineDock bus={transport} videoFile={videoFile} fallbackDuration={docExtra.durationSec}
+                  projectId={projectId} sourceAsset={docExtra.sourceVideo?.replace(/.*\//, "")} cuts={cuts} onCutsChange={setCuts}
                   words={transcript.flatMap((s) => s.words)}
                   captions={captions} onCaptionsChange={setCaptions} transcript={transcript} maxWords={captionStyle.maxWords}
                   motionGroups={motionGroups}
@@ -707,8 +708,8 @@ export function App() {
 
 /** Timeline dock: assina a ponte de transporte. P1 (fluidez): só re-renderiza quando
  *  duração/play MUDAM; o TEMPO flui por um adapter imperativo (playhead via DOM direto). */
-function TimelineDock({ bus, videoFile, fallbackDuration, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motionGroups, onMotionMove, onClipResize }: {
-  bus: TransportBus; videoFile: File | null; fallbackDuration: number; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
+function TimelineDock({ bus, videoFile, fallbackDuration, projectId, sourceAsset, cuts, onCutsChange, words, captions, onCaptionsChange, transcript, maxWords, motionGroups, onMotionMove, onClipResize }: {
+  bus: TransportBus; videoFile: File | null; fallbackDuration: number; projectId: string | null; sourceAsset?: string; cuts: Cut[]; onCutsChange: (c: Cut[]) => void; words: Word[];
   captions: Caption[]; onCaptionsChange: (c: Caption[]) => void; transcript: TranscriptSegment[]; maxWords?: number;
   motionGroups: { id: string; at: number; clips: { phraseId: string; duration: number; label?: string; raw?: number; video?: string }[] }[];
   onMotionMove: (id: string, at: number) => void;
@@ -728,7 +729,7 @@ function TimelineDock({ bus, videoFile, fallbackDuration, cuts, onCutsChange, wo
   const dur = meta.duration > 0 ? meta.duration : fallbackDuration;
   if (dur <= 0) return null;
   return (
-    <CutTimeline videoFile={videoFile} duration={dur} cuts={cuts} onCutsChange={onCutsChange}
+    <CutTimeline videoFile={videoFile} duration={dur} projectId={projectId} sourceAsset={sourceAsset} cuts={cuts} onCutsChange={onCutsChange}
       words={words} clock={clock} onSeek={(t) => bus.seek(t)} onPlayKept={() => bus.toggle()} playing={meta.playing}
       captions={captions} onCaptionsChange={onCaptionsChange} transcript={transcript} maxWords={maxWords}
       motionGroups={motionGroups} onMotionMove={onMotionMove} onClipResize={onClipResize} />

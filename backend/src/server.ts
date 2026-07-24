@@ -403,6 +403,57 @@ app.post("/api/proxy-asset", async (req, res) => {
 });
 
 /**
+ * WAVEFORM SERVER-SIDE: extrai os picos de áudio via ffmpeg e devolve um array normalizado.
+ * O front NÃO decodifica o vídeo (decodeAudioData falha no Safari/Mac p/ vários MP4 — a onda
+ * "sumia" lá; e decodificar GBs no browser é lento em qualquer lugar). Cache em disco por
+ * asset+buckets. Sem faixa de áudio → picos zerados (onda plana, sem erro).
+ */
+const waveformInflight = new Map<string, Promise<number[]>>();
+app.post("/api/waveform-asset", async (req, res) => {
+  const body = (req.body ?? {}) as { projectId?: string; asset?: string; buckets?: number };
+  if (!body.projectId || !body.asset) { res.status(400).json({ error: "projectId e asset obrigatórios" }); return; }
+  const name = String(body.asset).replace(/.*\//, "");
+  const inputPath = assetFsPath(String(body.projectId), name);
+  if (!fs.existsSync(inputPath)) { res.status(404).json({ error: "asset não encontrado" }); return; }
+  const buckets = Math.max(200, Math.min(6000, Math.round(Number(body.buckets) || 1200)));
+  const key = `wave-${body.projectId}-${name}-b${buckets}`.replace(/[^a-z0-9_.-]/gi, "").slice(0, 120);
+  const cacheFile = path.join(UPLOAD_DIR, `${key}.json`);
+  try {
+    if (fs.existsSync(cacheFile)) { res.json({ peaks: JSON.parse(fs.readFileSync(cacheFile, "utf8")) }); return; }
+    let job = waveformInflight.get(key);
+    if (!job) {
+      job = (async () => {
+        // PCM mono f32 a 4 kHz: leve (3 min ≈ 2,8 MB) e resolução de sobra p/ a onda.
+        const pcm = path.join(UPLOAD_DIR, `${key}.f32`);
+        try {
+          await runFfmpeg(["-y", "-i", inputPath, "-vn", "-ac", "1", "-ar", "4000", "-f", "f32le", pcm], undefined, "waveform");
+          const buf = fs.existsSync(pcm) ? fs.readFileSync(pcm) : Buffer.alloc(0);
+          const n = Math.floor(buf.byteLength / 4);
+          const f32 = new Float32Array(buf.buffer, buf.byteOffset, n);
+          const peaks = new Array(buckets).fill(0);
+          if (n > 0) {
+            const per = Math.max(1, Math.floor(n / buckets));
+            let maxv = 1e-6;
+            for (let b = 0; b < buckets; b++) {
+              let peak = 0; const s = b * per, e = Math.min(n, s + per);
+              for (let i = s; i < e; i++) { const a = Math.abs(f32[i]); if (a > peak) peak = a; }
+              peaks[b] = peak; if (peak > maxv) maxv = peak;
+            }
+            for (let b = 0; b < buckets; b++) peaks[b] = +(peaks[b] / maxv).toFixed(4);
+          }
+          fs.writeFileSync(cacheFile, JSON.stringify(peaks));
+          return peaks;
+        } finally { fs.rm(pcm, () => {}); }
+      })().finally(() => waveformInflight.delete(key));
+      waveformInflight.set(key, job);
+    }
+    res.json({ peaks: await job });
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message });
+  }
+});
+
+/**
  * EXPORT (Etapa 6): render via Remotion como JOB com progresso.
  *  POST /api/render          → inicia; devolve { jobId }
  *  GET  /api/render/progress/:id → { status, progress }  (polling)

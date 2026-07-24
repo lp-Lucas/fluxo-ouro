@@ -67,37 +67,65 @@ const fmtRuler = (t: number) => {
   return s === Math.floor(s) ? `${m}:${String(Math.floor(s)).padStart(2, "0")}` : `${m}:${s.toFixed(1).padStart(4, "0")}`;
 };
 
-/** Decodifica o áudio do arquivo e devolve picos normalizados por bucket. */
-function useWaveform(file: File | null, buckets: number): Float32Array | null {
+/**
+ * Picos da waveform. Prioriza o SERVIDOR (ffmpeg → picos prontos): funciona em qualquer
+ * navegador — inclusive Safari/Mac, onde `decodeAudioData` falha p/ vários MP4 e a onda
+ * "sumia" — e é rápido (não decodifica o vídeo inteiro no browser, nem espera o blob).
+ * Fallback: decodifica o blob local (fluxo de criação, sem projeto salvo ainda).
+ */
+function useWaveform(file: File | null, buckets: number, projectId?: string | null, asset?: string): Float32Array | null {
   const [peaks, setPeaks] = useState<Float32Array | null>(null);
   useEffect(() => {
     let cancel = false;
     setPeaks(null);
-    if (!file) return; // sem blob ainda (abrindo projeto, streamando): a timeline já aparece, a onda entra depois
-    (async () => {
-      try {
-        const buf = await file.arrayBuffer();
-        const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const ctx = new Ctx();
-        const audio = await ctx.decodeAudioData(buf.slice(0));
-        ctx.close();
-        const ch = audio.getChannelData(0);
-        const per = Math.max(1, Math.floor(ch.length / buckets));
-        const out = new Float32Array(buckets);
-        let maxv = 1e-6;
-        for (let b = 0; b < buckets; b++) {
-          let peak = 0;
-          const s = b * per, e = Math.min(ch.length, s + per);
-          for (let i = s; i < e; i++) { const a = Math.abs(ch[i]); if (a > peak) peak = a; }
-          out[b] = peak; if (peak > maxv) maxv = peak;
-        }
-        for (let b = 0; b < buckets; b++) out[b] /= maxv;
-        if (!cancel) setPeaks(out);
-      } catch { if (!cancel) setPeaks(null); }
-    })();
+
+    // 1) SERVIDOR — Mac-safe e leve. Não depende do blob.
+    if (projectId && asset) {
+      (async () => {
+        try {
+          const r = await fetch(comBase("/api/waveform-asset"), {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId, asset, buckets }),
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (!cancel && Array.isArray(d.peaks) && d.peaks.length) { setPeaks(Float32Array.from(d.peaks)); return; }
+          }
+        } catch { /* cai no fallback do blob */ }
+        if (!cancel && file) decodeLocal(file, buckets, cancel, setPeaks);
+      })();
+      return () => { cancel = true; };
+    }
+
+    // 2) FALLBACK — decodifica o blob no navegador (Chrome ok; Safari pode falhar).
+    if (!file) return; // sem blob e sem servidor: a onda entra quando um dos dois chegar
+    decodeLocal(file, buckets, cancel, setPeaks);
     return () => { cancel = true; };
-  }, [file, buckets]);
+  }, [file, buckets, projectId, asset]);
   return peaks;
+}
+
+/** Decodifica o áudio do blob local via Web Audio (fallback do useWaveform). */
+async function decodeLocal(file: File, buckets: number, cancel: boolean, setPeaks: (p: Float32Array | null) => void) {
+  try {
+    const buf = await file.arrayBuffer();
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new Ctx();
+    const audio = await ctx.decodeAudioData(buf.slice(0));
+    ctx.close();
+    const ch = audio.getChannelData(0);
+    const per = Math.max(1, Math.floor(ch.length / buckets));
+    const out = new Float32Array(buckets);
+    let maxv = 1e-6;
+    for (let b = 0; b < buckets; b++) {
+      let peak = 0;
+      const s = b * per, e = Math.min(ch.length, s + per);
+      for (let i = s; i < e; i++) { const a = Math.abs(ch[i]); if (a > peak) peak = a; }
+      out[b] = peak; if (peak > maxv) maxv = peak;
+    }
+    for (let b = 0; b < buckets; b++) out[b] /= maxv;
+    if (!cancel) setPeaks(out);
+  } catch { if (!cancel) setPeaks(null); }
 }
 
 type Drag =
@@ -115,8 +143,12 @@ type Drag =
 export function CutTimeline({
   videoFile, duration, cuts, onCutsChange, words, currentTime = 0, clock, onSeek, onPlayKept, playing,
   captions, onCaptionsChange, transcript, maxWords = 7, motionGroups, onMotionMove, onClipResize,
+  projectId, sourceAsset,
 }: {
   videoFile: File | null;
+  /** projeto atual: com projectId + asset a waveform vem do servidor (Mac-safe, sem decode no browser). */
+  projectId?: string | null;
+  sourceAsset?: string;
   duration: number;
   cuts: Cut[];
   onCutsChange: (cuts: Cut[]) => void;
@@ -148,7 +180,7 @@ export function CutTimeline({
   const MOT_TOP = RULER + WAVE + capH;   // faixa dos motions logo abaixo das legendas
   const H = RULER + WAVE + capH + motH;
   const buckets = Math.min(6000, Math.max(800, Math.round(duration * 50)));
-  const peaks = useWaveform(videoFile, buckets);
+  const peaks = useWaveform(videoFile, buckets, projectId, sourceAsset);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null); // container rolável (largura visível)
   const wrapRef = useRef<HTMLDivElement>(null);   // conteúdo (largura = visível × zoom)

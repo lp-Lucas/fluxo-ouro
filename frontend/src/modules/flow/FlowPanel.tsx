@@ -305,12 +305,19 @@ export function FlowPanel({
    */
   function prevPhraseDesign(ph: FlowPhrase): string | undefined {
     const m = flow?.moments.find((mm) => mm.phrases.some((p) => p.id === ph.id));
-    if (!m || (m.animMode ?? "solta") !== "continua") return undefined;
+    if (!m) return undefined;
     const i = m.phrases.findIndex((p) => p.id === ph.id);
-    return i > 0 ? m.phrases[i - 1].imagePath : undefined;
+    if (i <= 0) return undefined; // 1ª frase = entrada, nunca contínua
+    // POR FRASE tem prioridade; sem override, herda o padrão do momento.
+    const padraoMomento = (m.animMode ?? "solta") === "continua" ? "continua" : "solta";
+    const mode = ph.animMode ?? padraoMomento;
+    return mode === "continua" ? m.phrases[i - 1].imagePath : undefined;
   }
   const setAnimMode = (momentId: string, mode: FlowAnimMode) =>
     flow && onFlowChange({ ...flow, moments: flow.moments.map((m) => (m.id === momentId ? { ...m, animMode: mode } : m)) });
+  /** Modo de transição de UMA frase (solta/contínua) — override do padrão do momento. */
+  const setPhraseAnimMode = (phraseId: string, mode: "solta" | "continua") =>
+    patchPhrase(phraseId, { animMode: mode });
 
   /** Remove um momento (se já houver popup dele na timeline, remova-o lá também). */
   function removerMomento(momentId: string) {
@@ -731,24 +738,41 @@ export function FlowPanel({
                                 {ph.skipMotion ? "＋" : "⊘"}
                               </button>
                             </div>
-                            {/* JUNTAR com a próxima: as duas frases viram UMA tela / UM clipe */}
-                            {phIdx < m.phrases.length - 1 && (
-                              <div style={{ textAlign: "center", margin: "-2px 0 4px" }}>
-                                <button onClick={() => juntarFrases(m.id, ph.id)}
-                                  title="junta esta frase com a de baixo — vira um único vídeo (o design é refeito)"
-                                  style={{ fontSize: 10, padding: "1px 12px", borderRadius: 999, border: "1px dashed var(--border)", background: "transparent", color: "var(--muted)", cursor: "pointer" }}>
-                                  ⇣ juntar
-                                </button>
-                              </div>
-                            )}
+                            {/* ENTRE as frases: TRANSIÇÃO da próxima (solta/contínua) + JUNTAR */}
+                            {phIdx < m.phrases.length - 1 && (() => {
+                              const next = m.phrases[phIdx + 1];
+                              const padrao = (m.animMode ?? "solta") === "continua" ? "continua" : "solta";
+                              const efetivo = next.animMode ?? padrao;
+                              const texto = (m.animMode ?? "solta") === "texto";
+                              return (
+                                <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", margin: "-2px 0 4px", flexWrap: "wrap" }}>
+                                  {!texto && (
+                                    <label title="como a PRÓXIMA frase entra a partir desta — solta (entrada independente) ou contínua (encadeia do design desta frase, emenda invisível)"
+                                      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, color: "var(--muted)" }}>
+                                      ↳
+                                      <select value={efetivo} onChange={(e) => setPhraseAnimMode(next.id, e.target.value as "solta" | "continua")}
+                                        style={{ fontSize: 10, padding: "0 2px" }}>
+                                        <option value="solta">solta</option>
+                                        <option value="continua">⛓ contínua</option>
+                                      </select>
+                                    </label>
+                                  )}
+                                  <button onClick={() => juntarFrases(m.id, ph.id)}
+                                    title="junta esta frase com a de baixo — vira um único vídeo (o design é refeito)"
+                                    style={{ fontSize: 10, padding: "1px 12px", borderRadius: 999, border: "1px dashed var(--border)", background: "transparent", color: "var(--muted)", cursor: "pointer" }}>
+                                    ⇣ juntar
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })}
                       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
                         <select value={m.animMode ?? "solta"} onChange={(e) => setAnimMode(m.id, e.target.value as FlowAnimMode)}
-                          title="solta: entrada por IA · contínua: transição encadeada (IA) · texto: animação local (ffmpeg), sem IA — ideal só p/ texto" style={{ fontSize: 11 }}>
-                          <option value="solta">animação solta</option>
-                          <option value="continua">animação contínua</option>
+                          title="PADRÃO do momento (cada transição entre frases pode sobrepor, no ↳ acima). solta: entrada por IA · contínua: encadeada (IA) · texto: animação local (ffmpeg), sem IA" style={{ fontSize: 11 }}>
+                          <option value="solta">padrão: solta</option>
+                          <option value="continua">padrão: contínua</option>
                           <option value="texto">só texto (ffmpeg, sem IA)</option>
                         </select>
                         <button onClick={() => colocar(m)} disabled={!allReady}

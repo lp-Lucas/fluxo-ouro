@@ -183,6 +183,12 @@ export interface FlowPhrase {
    * é preservado (só não entra na timeline); reativar traz tudo de volta.
    */
   skipMotion?: boolean;
+  /**
+   * Modo de TRANSIÇÃO desta frase (como ela ENTRA a partir da anterior, no mesmo momento):
+   * "solta" = entrada independente · "continua" = encadeia do design da frase anterior.
+   * Ausente = herda o padrão do momento (FlowMoment.animMode). Ignorado na 1ª frase (entrada).
+   */
+  animMode?: "solta" | "continua";
   /** Motion PRONTO subido pelo usuário (sem IA): pula design/animação, cai em video_ready. */
   motionUploaded?: boolean;
   status: FlowPhraseStatus;

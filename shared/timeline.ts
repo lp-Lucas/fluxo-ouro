@@ -158,6 +158,12 @@ export interface SupportPopup extends PopupBase {
     typo?: { lines: TypoLine[]; align?: "left" | "center" | "right"; lineGap?: number };
     /** Estilo avançado (mesmo das legendas) aplicado à tipografia — opcional. */
     typoStyle?: CaptionStyle;
+    /**
+     * CORES do "botão"/card (presets balloon, textbox, keyword, highlight-number, logo-card,
+     * photo-card). Ausente = usa a cor padrão do preset. `bg` = fundo, `text` = texto,
+     * `accent` = destaque (faixa do textbox / 2ª cor do gradiente do número).
+     */
+    colors?: { bg?: string; text?: string; accent?: string };
   };
   layout: {
     x: number; // 0..100 (%)

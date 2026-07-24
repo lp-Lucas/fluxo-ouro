@@ -207,6 +207,8 @@ function SupportFields({ p, upd }: { p: SupportPopup; upd: (id: string, patch: P
             onPick={(u) => setContent({ imageUrl: u })} onClear={() => setContent({ imageUrl: "" })} />
         )}
 
+        {COLOR_PRESETS.has(p.preset) && <ColorControls p={p} setContent={setContent} />}
+
         <AiElementField onDone={(dataUrl) => { upd(p.id, { preset: "photo-plain" }); setContent({ imageUrl: dataUrl }); }} />
       </div>
 
@@ -220,6 +222,52 @@ function SupportFields({ p, upd }: { p: SupportPopup; upd: (id: string, patch: P
         <SliderField label="Tamanho" value={p.layout.scale} display={`${p.layout.scale.toFixed(2)}×`}
           min={0.3} max={3} step={0.05} onChange={(v) => upd(p.id, { layout: { ...p.layout, scale: v } })} />
         <Toggle on={!!p.behindSubject} onChange={(b) => upd(p.id, { behindSubject: b })} label="atrás da pessoa" />
+      </div>
+    </div>
+  );
+}
+
+// Presets que têm "botão"/card colorizável, com a cor de FUNDO padrão (aproximação hex só
+// pra o seletor abrir na cor certa; sem override, o renderer usa o padrão real do preset).
+const COLOR_PRESETS = new Set<SupportPreset>(["balloon", "textbox", "keyword", "highlight-number", "logo-card", "photo-card"]);
+const DEFAULT_BG: Record<string, string> = {
+  balloon: "#ffffff", textbox: "#14141c", keyword: "#ff2e63", "highlight-number": "#ff2e63", "logo-card": "#ffffff", "photo-card": "#ffffff",
+};
+const DEFAULT_TEXT: Record<string, string> = {
+  balloon: "#111111", textbox: "#ffffff", keyword: "#ffffff", "highlight-number": "#ffffff", "logo-card": "#111111", "photo-card": "#111111",
+};
+
+/** Um seletor de cor com rótulo + swatch nativo + reset pra "cor padrão do preset". */
+function ColorPick({ label, value, isSet, onChange, onReset }: {
+  label: string; value: string; isSet: boolean; onChange: (v: string) => void; onReset: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 11, color: "var(--muted)" }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input type="color" value={value} onChange={(e) => onChange(e.target.value)}
+          style={{ width: 34, height: 26, padding: 0, border: "1px solid var(--border)", borderRadius: 6, background: "none", cursor: "pointer" }} />
+        {isSet
+          ? <button onClick={onReset} title="voltar à cor padrão do preset" style={{ fontSize: 10.5, color: "var(--muted)", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}>padrão</button>
+          : <span style={{ fontSize: 10.5, color: "var(--faint)" }}>padrão</span>}
+      </div>
+    </div>
+  );
+}
+
+/** Cores do "botão"/card do popup: fundo, texto e (textbox/número) destaque. */
+function ColorControls({ p, setContent }: { p: SupportPopup; setContent: (patch: Partial<SupportPopup["content"]>) => void }) {
+  const c = p.content.colors ?? {};
+  const set = (patch: Partial<NonNullable<SupportPopup["content"]["colors"]>>) => setContent({ colors: { ...c, ...patch } });
+  const clear = (key: "bg" | "text" | "accent") => { const nc = { ...c }; delete nc[key]; setContent({ colors: nc }); };
+  const hasAccent = p.preset === "textbox" || p.preset === "highlight-number";
+  return (
+    <div className="fo-field" style={{ marginBottom: 12 }}>
+      <label>Cores do botão</label>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <ColorPick label="Fundo" value={c.bg ?? DEFAULT_BG[p.preset] ?? "#ff2e63"} isSet={!!c.bg} onChange={(v) => set({ bg: v })} onReset={() => clear("bg")} />
+        <ColorPick label="Texto" value={c.text ?? DEFAULT_TEXT[p.preset] ?? "#ffffff"} isSet={!!c.text} onChange={(v) => set({ text: v })} onReset={() => clear("text")} />
+        {hasAccent && <ColorPick label="Destaque" value={c.accent ?? "#ff2e63"} isSet={!!c.accent} onChange={(v) => set({ accent: v })} onReset={() => clear("accent")} />}
       </div>
     </div>
   );

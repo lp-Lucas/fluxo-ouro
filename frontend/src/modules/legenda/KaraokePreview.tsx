@@ -731,7 +731,14 @@ const pbBtnPlay: React.CSSProperties = {
 // Analisa o <video> via Web Audio (AnalyserNode). Verde/laranja = ok; VERMELHO (pico ~0dBFS)
 // = ESTOURANDO. createMediaElementSource só pode rodar 1x por elemento — cacheado por WeakMap.
 const audioGraphs = new WeakMap<HTMLMediaElement, { ctx: AudioContext; analyser: AnalyserNode }>();
+// SAFARI (Mac): createMediaElementSource() reroteia o áudio do <video> pelo grafo e o Safari
+// costuma entregar SILÊNCIO nesse caminho (bug antigo com <video>/blob) — o vídeo toca sem som.
+// Como o grafo só alimenta o medidor de VU (cosmético), no Safari a gente NÃO cria o grafo:
+// o áudio segue pela saída NATIVA e volta a sair. Chrome/Firefox (Mac e Windows) seguem iguais.
+const IS_SAFARI = typeof navigator !== "undefined"
+  && /^((?!chrome|chromium|crios|android|fxios|edg).)*safari/i.test(navigator.userAgent);
 function getAudioGraph(v: HTMLMediaElement): { ctx: AudioContext; analyser: AnalyserNode } | null {
+  if (IS_SAFARI) return null; // não roteia o áudio pelo Web Audio no Safari (senão fica mudo)
   const cached = audioGraphs.get(v);
   if (cached) return cached;
   try {

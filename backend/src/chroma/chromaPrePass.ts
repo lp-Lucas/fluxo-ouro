@@ -61,8 +61,10 @@ function keyingChain(ch: ChromaSettings): string {
   const keyHex = `0x${hex2(k.r)}${hex2(k.g)}${hex2(k.b)}`;
   // O chromakey do ffmpeg já normaliza a distância UV por 255·√2, igual ao shader
   // (que divide por √2 em UV 0..1) → limiares vão COMO ESTÃO (validado por chroma-parity).
-  const sim = Math.min(1, ch.similarity);
+  // RAMPA CENTRADA (igual ao shader): a borda fica CENTRADA em similarity, com largura
+  // smoothness. lo = similarity - smoothness/2 (clamp 0..1); ffmpeg ramp = [lo, lo+blend].
   const blend = Math.max(1e-4, ch.smoothness);
+  const sim = Math.max(0, Math.min(1, ch.similarity - ch.smoothness * 0.5));
   const bgClip = (ch.bgClip ?? 0).toFixed(4);
   const span = Math.max((ch.fgClip ?? 1) - (ch.bgClip ?? 0), 0.0001).toFixed(4);
   // clip: remapeia o alpha [bgClip..fgClip] → [0..1] (mesma matemática do shader).

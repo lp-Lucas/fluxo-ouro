@@ -289,7 +289,9 @@ export function KaraokePreview({
   }, [videoFile, useProxy, projectId, sourceAsset]);
 
   // fonte efetiva do <video> + troca SEM perder a posição (proxy chega no meio da sessão)
-  const src = useProxy && proxyUrl ? proxyUrl : url;
+  // Com CHROMA ativo, usa o vídeo ORIGINAL (não o proxy 540p): a chave roda em resolução cheia
+  // — senão a borda recortada fica pixelada (o proxy é pequeno e o CSS estica de volta).
+  const src = useProxy && proxyUrl && !isChromaActive(chroma) ? proxyUrl : url;
   const lastSrcRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     const v = videoRef.current; if (!v || !src) return;
@@ -347,7 +349,9 @@ export function KaraokePreview({
   const matteActive = !chromaActive && matteOn;
   // P2: resolução de PROCESSAMENTO = cap FullHD (igual export) × fator escolhido pelo usuário.
   const capScale = natural ? Math.min(1920 / Math.max(natural.w, natural.h), 1080 / Math.min(natural.w, natural.h), 1) : 1;
-  const procScale = capScale * resScale;
+  // Com CHROMA, processa no teto FHD (ignora a redução da "prévia") — borda nítida. Sem chroma,
+  // respeita a prévia (perf). O teto capScale evita canvas gigante (ex.: 4K).
+  const procScale = chromaActive ? capScale : capScale * resScale;
 
   // Elemento de fundo do chroma (imagem ou vídeo), carregado da URL do asset.
   const [bgImg, setBgImg] = useState<HTMLImageElement | null>(null);

@@ -408,9 +408,17 @@ export function FlowPanel({
       });
       const res = await pollJob(jobId);
       patchPhrase(ph.id, { fittedVideoPath: res.fittedVideoPath as string, fitInfo: res.fitInfo as FlowPhrase["fitInfo"] });
-      // se já colocado, re-concatena o momento pra a timeline refletir o novo tempo
-      const m = flowRef.current?.moments.find((mm) => mm.phrases.some((p) => p.id === ph.id));
-      if (m && m.phrases.some((p) => p.id === ph.id && p.status === "placed")) await colocar(m);
+      // se já colocado, re-concatena o momento pra a timeline refletir o novo tempo.
+      // IMPORTANTE: monta um momento FRESCO com o fitted NOVO em mãos — não dá pra ler do
+      // flowRef aqui (o patchPhrase acima ainda não re-renderizou; o flowRef teria o fitted
+      // ANTIGO e o concat sairia com a duração velha → "o resize não muda o tempo real").
+      const m0 = flowRef.current?.moments.find((mm) => mm.phrases.some((p) => p.id === ph.id));
+      if (m0 && m0.phrases.some((p) => p.id === ph.id && p.status === "placed")) {
+        const fresh = { ...m0, phrases: m0.phrases.map((p) => (p.id === ph.id
+          ? { ...p, overrideDuration: novaDuracao, fittedVideoPath: res.fittedVideoPath as string, fitInfo: res.fitInfo as FlowPhrase["fitInfo"] }
+          : p)) };
+        await colocar(fresh);
+      }
     } catch (e) { patchPhrase(ph.id, { error: (e as Error).message }); }
     finally { setJob(ph.id, null); }
   }

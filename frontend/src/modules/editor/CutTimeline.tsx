@@ -202,8 +202,15 @@ export function CutTimeline({
   const [sel, setSel] = useState<string | null>(null);
   const [capSel, setCapSel] = useState<string | null>(null);
   const [motSel, setMotSel] = useState<string | null>(null);
+  const [motClipSel, setMotClipSel] = useState<string | null>(null); // clipe de motion selecionado (phraseId) → painel de tempo preciso
   const [liveDur, setLiveDur] = useState<Record<string, number>>({}); // duração viva por clipe durante o resize
   useEffect(() => { setLiveDur({}); }, [motionGroups]); // reset quando os grupos mudam (re-fit aplicado)
+  // clipe selecionado (achatado dos grupos) — alimenta o painel de tempo preciso.
+  const motClip = useMemo(() => {
+    if (!motClipSel || !motionGroups) return null;
+    for (const g of motionGroups) { const c = g.clips.find((c) => c.phraseId === motClipSel); if (c) return c; }
+    return null;
+  }, [motClipSel, motionGroups]);
   const drag = useRef<Drag>(null);
   const [tempCut, setTempCut] = useState<{ start: number; end: number } | null>(null);
   const [tempCap, setTempCap] = useState<{ start: number; end: number } | null>(null);
@@ -276,12 +283,12 @@ export function CutTimeline({
     | { kind: "resize"; phraseId: string; startX: number; startDur: number }
     | null
   >(null);
-  const startMotionMove = (e: React.PointerEvent, groupId: string, at: number, total: number) => {
-    e.preventDefault(); e.stopPropagation(); setMotSel(groupId);
+  const startMotionMove = (e: React.PointerEvent, groupId: string, at: number, total: number, phraseId: string) => {
+    e.preventDefault(); e.stopPropagation(); setMotSel(groupId); setMotClipSel(phraseId);
     motPtr.current = { kind: "move", groupId, at0: at, total, startX: e.clientX };
   };
   const startMotionResize = (e: React.PointerEvent, phraseId: string, startDur: number) => {
-    e.preventDefault(); e.stopPropagation();
+    e.preventDefault(); e.stopPropagation(); setMotClipSel(phraseId);
     motPtr.current = { kind: "resize", phraseId, startX: e.clientX, startDur };
   };
   useEffect(() => {
@@ -299,12 +306,13 @@ export function CutTimeline({
         const nsSrc = real ? outputToSource(nsOut, plan) : nsOut;
         onMotionMove?.(d.groupId, +snap(nsSrc).toFixed(3));
       } else {
-        setLiveDur((prev) => ({ ...prev, [d.phraseId]: Math.max(0.5, Math.min(30, +(d.startDur + dtOut).toFixed(1))) }));
+        // 2 casas: arrasto fino (o eixo já dá px/s alto no zoom); o painel dá o valor exato.
+        setLiveDur((prev) => ({ ...prev, [d.phraseId]: Math.max(0.3, Math.min(60, +(d.startDur + dtOut).toFixed(2))) }));
       }
     };
     const up = () => {
       const d = motPtr.current; motPtr.current = null;
-      if (d?.kind === "resize") { const nd = liveDur[d.phraseId] ?? d.startDur; if (onClipResize && Math.abs(nd - d.startDur) > 0.05) onClipResize(d.phraseId, nd); }
+      if (d?.kind === "resize") { const nd = liveDur[d.phraseId] ?? d.startDur; if (onClipResize && Math.abs(nd - d.startDur) > 0.02) onClipResize(d.phraseId, nd); }
     };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
     return () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
@@ -538,8 +546,8 @@ export function CutTimeline({
     const x = localX(e);
     const y = localY(e);
 
-    // Faixa de MOTIONS: os clipes são <div> DOM (tratam move/resize). Aqui só o VAZIO = busca.
-    if (motOn && y >= MOT_TOP) { setMotSel(null); drag.current = { kind: "scrub" }; onSeek(snap(xToT(x))); return; }
+    // Faixa de MOTIONS: os clipes são <div> DOM (tratam move/resize). Aqui só o VAZIO = busca + deseleciona.
+    if (motOn && y >= MOT_TOP) { setMotSel(null); setMotClipSel(null); drag.current = { kind: "scrub" }; onSeek(snap(xToT(x))); return; }
 
     // Faixa das legendas (entre a onda e os motions). A régua e a onda seguem sendo dos cortes.
     if (capsOn && y >= CAP_TOP && y < MOT_TOP) {
@@ -756,12 +764,13 @@ export function CutTimeline({
               const outStart = grpOut + (seg.start - grp.at); // offset de tela (saída) a partir do início do grupo
               const left = outToX(outStart), w = Math.max(18, (seg.dur / axisDur) * cw);
               const raw = seg.raw ?? seg.dur, speed = raw / Math.max(0.1, seg.dur), fast = speed > 1.5 || speed < 0.7;
+              const clipSel = seg.phraseId === motClipSel;
               return (
-                <div key={seg.phraseId} onPointerDown={(e) => startMotionMove(e, grp.id, grp.at, total)}
-                  title={`${seg.label ?? "clipe"} · ${seg.dur.toFixed(1)}s ×${speed.toFixed(2)} — corpo move o motion, borda muda a velocidade`}
+                <div key={seg.phraseId} onPointerDown={(e) => startMotionMove(e, grp.id, grp.at, total, seg.phraseId)}
+                  title={`${seg.label ?? "clipe"} · ${seg.dur.toFixed(2)}s ×${speed.toFixed(2)} — corpo move o motion, borda estica/comprime (velocidade). Clique p/ ajustar o tempo exato embaixo.`}
                   style={{ position: "absolute", top: MOT_TOP + 6, height: MOT - 12, left, width: w,
-                    background: "var(--active-grad)", border: "1px solid var(--border-active)", borderRadius: 7,
-                    boxShadow: "var(--shadow-active)", overflow: "hidden", cursor: "grab", zIndex: 4 }}>
+                    background: "var(--active-grad)", border: clipSel ? "2px solid var(--accent)" : "1px solid var(--border-active)", borderRadius: 7,
+                    boxShadow: clipSel ? "0 0 0 2px rgba(255,255,255,0.12), var(--shadow-active)" : "var(--shadow-active)", overflow: "hidden", cursor: "grab", zIndex: clipSel ? 5 : 4 }}>
                   {seg.video && <video src={comBase(seg.video)} muted preload="metadata"
                     style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.4, pointerEvents: "none" }} />}
                   <span style={{ position: "absolute", left: 6, top: 4, fontSize: 10, color: "var(--text)", fontWeight: 600, whiteSpace: "nowrap", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>{seg.dur.toFixed(1)}s</span>
@@ -828,6 +837,43 @@ export function CutTimeline({
             style={{ color: "var(--red)", marginLeft: 8 }}>apagar</button>
         </div>
       ) : null}
+
+      {/* MOTION selecionado — CONTROLE DE TEMPO PRECISO. A borda estica/comprime (velocidade);
+          aqui você crava o tempo de tela exato (digite os segundos ou use os passos). */}
+      {motClip && onClipResize ? (() => {
+        const dur = +(liveDur[motClip.phraseId] ?? motClip.duration).toFixed(2);
+        const raw = motClip.raw && motClip.raw > 0 ? motClip.raw : dur;
+        const speed = raw / Math.max(0.1, dur);
+        const fast = speed > 1.5 || speed < 0.7;
+        const clampD = (v: number) => Math.max(0.3, Math.min(60, +v.toFixed(2)));
+        const setD = (v: number) => { const n = clampD(v); if (Math.abs(n - dur) > 0.005) onClipResize(motClip.phraseId, n); };
+        return (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+            <strong style={{ color: "var(--accent)" }}>🎬 {motClip.label ?? "motion"}</strong>
+            <span style={{ color: fast ? "#e06b6b" : "var(--muted)" }} title="velocidade do vídeo bruto p/ caber neste tempo (×1 = natural)">
+              ×{speed.toFixed(2)} {fast ? "(forçado)" : ""}
+            </span>
+            <span style={{ marginLeft: 8 }}>duração:</span>
+            <input key={`${motClip.phraseId}-${motClip.duration}`} type="number" min={0.3} max={60} step={0.1}
+              defaultValue={dur.toFixed(2)}
+              onKeyDown={(e) => { if (e.key === "Enter") { setD(parseFloat((e.target as HTMLInputElement).value)); (e.target as HTMLInputElement).blur(); } }}
+              onBlur={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) setD(v); }}
+              title="tempo de tela EXATO em segundos (Enter aplica)"
+              style={{ width: 68, background: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)",
+                borderRadius: 8, padding: "4px 8px", fontSize: 12.5, fontVariantNumeric: "tabular-nums", textAlign: "right" }} />
+            <span style={{ color: "var(--muted)" }}>s</span>
+            <span style={{ display: "inline-flex", gap: 4, marginLeft: 4 }}>
+              <button onClick={() => setD(dur - 0.5)} title="-0.5s">−0.5</button>
+              <button onClick={() => setD(dur - 0.1)} title="-0.1s">−0.1</button>
+              <button onClick={() => setD(dur + 0.1)} title="+0.1s">+0.1</button>
+              <button onClick={() => setD(dur + 0.5)} title="+0.5s">+0.5</button>
+            </span>
+            <span style={{ color: "var(--faint)", fontSize: 11.5 }} title="duração natural do vídeo bruto gerado">bruto {raw.toFixed(2)}s</span>
+            <button onClick={() => setD(raw)} title="voltar à velocidade natural (×1)"
+              style={{ fontSize: 11.5, background: "transparent", color: "var(--muted)" }}>= natural (×1)</button>
+          </div>
+        );
+      })() : null}
 
       {/* As ferramentas GLOBAIS das legendas (alinhar, ±50ms, avisos, re-sincronizar)
           moram no painel "Roteiro & Correção" (CaptionToolbar) — aqui fica só o que

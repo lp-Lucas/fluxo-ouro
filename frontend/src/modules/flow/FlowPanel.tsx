@@ -435,7 +435,9 @@ export function FlowPanel({
         // "Regerar": já existe um vídeo → força um take novo (ignora o cache, mesmo com a mesma imagem).
         regenNonce: ph.fittedVideoPath ? Date.now().toString(36) : undefined,
       });
-      const res = await pollJob(jobId, (p) => setJob(ph.id, { kind: "animate", progress: p }));
+      // GUARDA o jobId no estado do job — sem isto o botão "parar" não tinha o que cancelar (bug).
+      setJob(ph.id, { kind: "animate", progress: 0, jobId });
+      const res = await pollJob(jobId, (p) => setJob(ph.id, { kind: "animate", progress: p, jobId }));
       patchPhrase(ph.id, { videoPath: res.videoPath as string, fittedVideoPath: res.fittedVideoPath as string, fitInfo: res.fitInfo as FlowPhrase["fitInfo"], status: "video_ready" });
     } catch (e) { patchPhrase(ph.id, { status: "error", error: (e as Error).message }); }
     finally { setJob(ph.id, null); }

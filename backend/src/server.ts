@@ -1189,11 +1189,18 @@ function startFlowJob(worker: (job: FlowJob, signal: AbortSignal) => Promise<unk
   const job: FlowJob = { status: "running", progress: 0 };
   flowJobs.set(id, job);
   const ac = new AbortController();
-  job.abort = () => ac.abort(); // cancelamento pelo usuário (endpoint /cancel)
-  const timer = setTimeout(() => ac.abort(), 12 * 60 * 1000); // vídeo demora → 12 min
+  // Ao cancelar/timeout, marca o job TERMINAL NA HORA — NÃO espera o worker settlar. Um provider
+  // que ignora o signal e fica pendurado deixava o job "running" pra sempre (o bug: "gera pra
+  // sempre e não cancela"). Agora o cancel/timeout responde na hora; a chamada externa órfã morre
+  // sozinha depois (o signal também é abortado). Guardas `=== "running"` evitam o worker atrasado
+  // sobrescrever o estado terminal.
+  const finalizar = (motivo: string) => { ac.abort(); if (job.status === "running") { job.status = "error"; job.error = motivo; } };
+  job.abort = () => finalizar("geração cancelada"); // endpoint /cancel
+  const timer = setTimeout(() => finalizar("a geração passou de 12 min e foi interrompida — tente de novo"), 12 * 60 * 1000);
   worker(job, ac.signal)
-    .then((result) => { job.status = "done"; job.progress = 1; job.result = result; })
+    .then((result) => { if (job.status === "running") { job.status = "done"; job.progress = 1; job.result = result; } })
     .catch((e) => {
+      if (job.status !== "running") return; // já cancelado/timeout
       job.status = "error";
       job.error = ac.signal.aborted ? "geração cancelada" : ((e as Error).message || "Falha no FLOW");
     })

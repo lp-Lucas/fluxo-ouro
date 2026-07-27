@@ -276,27 +276,12 @@ app.post("/api/assembly/flatten", async (req, res) => {
     // Transcrevemos SÓ os trechos de material NOVO e devolvemos pro front encaixar.
     const modo = String((req.body as { mode?: string }).mode ?? "reset");
     if (modo === "remap") {
-      const regioes = (((req.body as { newRegions?: Array<{ start: number; end: number }> }).newRegions) ?? [])
-        .map((r) => ({ start: Math.max(0, Number(r.start) || 0), end: Math.min(durationSec, Number(r.end) || 0) }))
-        .filter((r) => r.end - r.start > 0.15);
-      const novos: unknown[] = [];
-      for (const r of regioes) {
-        // só o ÁUDIO da fatia (16k mono) — é o que o whisper usa, e sai rápido.
-        const wav = path.join(UPLOAD_DIR, `newmat-${crypto.randomUUID()}.wav`);
-        try {
-          await runFfmpeg(["-y", "-ss", String(r.start), "-to", String(r.end), "-i", outPath,
-            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav], undefined, "assembly-newmat");
-          const t = await runTranscription(wav);
-          // desloca os tempos da fatia pro tempo da timeline nova
-          for (const seg of (t.transcript as Array<{ start: number; end: number; words?: Array<{ start: number; end: number }> }>)) {
-            seg.start += r.start; seg.end += r.start;
-            for (const wd of seg.words ?? []) { wd.start += r.start; wd.end += r.start; }
-            novos.push(seg);
-          }
-        } finally { fs.rm(wav, () => {}); }
-      }
-      console.log(`[ASSEMBLY] flatten remap: ${regioes.length} trecho(s) de material novo transcrito(s)`);
-      res.json({ videoFile: outName, fileName: outName, durationSec, width: w, height: h, newSegments: novos });
+      // SÓ ACHATA (rápido) — NADA de whisper aqui. No fluxo novo a transcrição é um passo
+      // SEPARADO ("Transcrever vídeo"). O front realoca a transcrição atual pelo mapa de
+      // material; o material novo fica sem legenda até o usuário transcrever quando quiser.
+      // (Antes o Concluir transcrevia o material novo aqui — whisper de minutos, o gargalo.)
+      console.log(`[ASSEMBLY] flatten remap: ${main.length} clipe(s) → ${durationSec.toFixed(1)}s (sem transcrição — passo separado)`);
+      res.json({ videoFile: outName, fileName: outName, durationSec, width: w, height: h, newSegments: [] });
       return;
     }
 

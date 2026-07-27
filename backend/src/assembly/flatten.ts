@@ -63,14 +63,19 @@ export async function flattenAssembly(
   // PRINCIPAL: normaliza cada clipe (v + a) na mesma grade (w×h, sar 1, 30fps, 48k stereo).
   let totalMain = 0;
   main.forEach((c, i) => {
-    inputs.push("-i", c.path);
+    const srcDur = Math.max(0.05, c.out - c.in);
+    // SEEK DE ENTRADA (-ss antes do -i): pula direto pro ponto de corte, decodificando SÓ o
+    // trecho [in,out]. O antigo `trim=start=in` decodificava desde o segundo 0 até `in` de cada
+    // clipe — num vídeo longo cortado em vários pedaços, re-decodificava tudo várias vezes (o
+    // gargalo dos 10+ min). `-t` limita a duração lida. Filtro só normaliza (sem trim).
+    inputs.push("-ss", c.in.toFixed(3), "-t", srcDur.toFixed(3), "-i", c.path);
     const t = tf(c.transform);
-    const durTl = Math.max(0.05, (c.out - c.in) / t.speed); // duração na timeline (pós-velocidade)
+    const durTl = Math.max(0.05, srcDur / t.speed); // duração na timeline (pós-velocidade)
     totalMain += durTl;
     if (isIdentityTransform(t)) {
-      // caminho ORIGINAL (inalterado): contido + pad centralizado.
+      // caminho ORIGINAL: contido + pad centralizado.
       filters.push(
-        `[${i}:v]trim=start=${c.in}:end=${c.out},setpts=PTS-STARTPTS,` +
+        `[${i}:v]setpts=PTS-STARTPTS,` +
         `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[mv${i}]`,
       );
     } else {
@@ -79,7 +84,7 @@ export async function flattenAssembly(
       const sw = Math.max(2, Math.round(w * t.scale)), sh = Math.max(2, Math.round(h * t.scale));
       const xpx = Math.round(t.x * w), ypx = Math.round(t.y * h);
       filters.push(
-        `[${i}:v]trim=start=${c.in}:end=${c.out},setpts=(PTS-STARTPTS)/${t.speed.toFixed(6)},` +
+        `[${i}:v]setpts=(PTS-STARTPTS)/${t.speed.toFixed(6)},` +
         `scale=${sw}:${sh}:force_original_aspect_ratio=decrease,setsar=1,fps=30,format=yuva420p,` +
         `colorchannelmixer=aa=${t.opacity.toFixed(4)}[fg${i}]`,
       );
@@ -88,7 +93,7 @@ export async function flattenAssembly(
     }
     if (mainHasAudio[i]) {
       const speedChain = t.speed !== 1 ? `,${atempoChain(t.speed)}` : "";
-      filters.push(`[${i}:a]atrim=start=${c.in}:end=${c.out},asetpts=PTS-STARTPTS${speedChain},aformat=sample_rates=48000:channel_layouts=stereo[ma${i}]`);
+      filters.push(`[${i}:a]asetpts=PTS-STARTPTS${speedChain},aformat=sample_rates=48000:channel_layouts=stereo[ma${i}]`);
     } else {
       filters.push(`anullsrc=r=48000:cl=stereo,atrim=duration=${durTl.toFixed(3)},asetpts=PTS-STARTPTS[ma${i}]`);
     }
@@ -100,23 +105,24 @@ export async function flattenAssembly(
   let curV = "[cv]";
   brolls.forEach((b, j) => {
     const idx = main.length + j;
-    inputs.push("-i", b.path);
+    const srcDur = Math.max(0.05, b.out - b.in);
+    inputs.push("-ss", b.in.toFixed(3), "-t", srcDur.toFixed(3), "-i", b.path); // seek de entrada (idem principal)
     const t = tf(b.transform);
-    const durTl = Math.max(0.05, (b.out - b.in) / t.speed);
+    const durTl = Math.max(0.05, srcDur / t.speed);
     const start = Math.max(0, Math.min(b.timelineStart, totalMain));
     const end = Math.min(start + durTl, totalMain);
     const setpts = `setpts=(PTS-STARTPTS)/${t.speed.toFixed(6)}+${start}/TB`;
     if (isIdentityTransform(t)) {
       // caminho ORIGINAL: cobre a tela e sobrepõe.
       filters.push(
-        `[${idx}:v]trim=start=${b.in}:end=${b.out},${setpts},` +
+        `[${idx}:v]${setpts},` +
         `scale=${w}:${h}:force_original_aspect_ratio=increase,crop=${w}:${h},setsar=1,fps=30[bv${j}]`,
       );
     } else {
       const bw = Math.max(2, Math.round(w * t.scale)), bh = Math.max(2, Math.round(h * t.scale));
       const xpx = Math.round(t.x * w), ypx = Math.round(t.y * h);
       filters.push(
-        `[${idx}:v]trim=start=${b.in}:end=${b.out},${setpts},` +
+        `[${idx}:v]${setpts},` +
         `scale=${bw}:${bh}:force_original_aspect_ratio=increase,crop=${bw}:${bh},setsar=1,fps=30,` +
         `format=yuva420p,colorchannelmixer=aa=${t.opacity.toFixed(4)}[bv${j}]`,
       );

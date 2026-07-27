@@ -160,14 +160,29 @@ export function ChromaPanel({
           </div>
         )}
         {(bg?.type === "image" || bg?.type === "video") && (
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            {([["cover", "Preencher"], ["contain", "Caber inteiro"]] as const).map(([v, nome]) => (
-              <button key={v} onClick={() => set({ fit: v })} className={(chroma.fit ?? "cover") === v ? "fo-active" : undefined}
-                style={{ fontSize: 12, borderRadius: 12 }}>
-                {nome}
-              </button>
-            ))}
-          </div>
+          <>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              {([["cover", "Preencher"], ["contain", "Caber inteiro"]] as const).map(([v, nome]) => (
+                <button key={v} onClick={() => set({ fit: v })} className={(chroma.fit ?? "cover") === v ? "fo-active" : undefined}
+                  style={{ fontSize: 12, borderRadius: 12 }}>
+                  {nome}
+                </button>
+              ))}
+            </div>
+            {/* POSIÇÃO/ESCALA do fundo — enquadrar a imagem/vídeo do fundo. */}
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontSize: 12.5, color: "var(--muted)" }}>Enquadrar o fundo</span>
+              {((chroma.bgScale ?? 1) !== 1 || (chroma.bgX ?? 0) !== 0 || (chroma.bgY ?? 0) !== 0) && (
+                <button onClick={() => set({ bgScale: 1, bgX: 0, bgY: 0 })} style={{ fontSize: 11, background: "transparent", color: "var(--muted)" }}>resetar</button>
+              )}
+            </div>
+            <SliderField label="Escala" value={chroma.bgScale ?? 1} display={`${Math.round((chroma.bgScale ?? 1) * 100)}%`}
+              min={0.2} max={3} step={0.01} onChange={(v) => set({ bgScale: v })} />
+            <SliderField label="Posição X" value={chroma.bgX ?? 0} display={`${Math.round((chroma.bgX ?? 0) * 100)}%`}
+              min={-1} max={1} step={0.01} onChange={(v) => set({ bgX: v })} />
+            <SliderField label="Posição Y" value={chroma.bgY ?? 0} display={`${Math.round((chroma.bgY ?? 0) * 100)}%`}
+              min={-1} max={1} step={0.01} onChange={(v) => set({ bgY: v })} />
+          </>
         )}
       </Card>
     </section>

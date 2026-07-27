@@ -85,15 +85,28 @@ function scaleFit(W: number, H: number, cover: boolean): string {
     : `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black`;
 }
 
+/** scale+crop (cover/contain) e depois o TRANSFORM do usuário (zoom + deslocamento). Igual ao
+ * shader: zoom ao redor do centro, off em fração do frame. Só entra quando não-neutro. */
+function bgFit(ch: ChromaSettings, W: number, H: number): string {
+  const cover = (ch.fit ?? "cover") === "cover";
+  const base = `[1:v]${scaleFit(W, H, cover)},setsar=1`;
+  const s = ch.bgScale && ch.bgScale > 0 ? ch.bgScale : 1;
+  const x = ch.bgX ?? 0, y = ch.bgY ?? 0;
+  if (s === 1 && x === 0 && y === 0) return `${base}[bg]`;
+  // amplia o fundo (já em WxH) por `s` e sobrepõe num fundo preto WxH, centrado + deslocado.
+  const bw = Math.max(2, Math.round(W * s)), bh = Math.max(2, Math.round(H * s));
+  const ox = Math.round((W - bw) / 2 + x * W), oy = Math.round((H - bh) / 2 + y * H);
+  return `${base},scale=${bw}:${bh}[bgz];color=c=black:s=${W}x${H}[bgb];[bgb][bgz]overlay=${ox}:${oy}[bg]`;
+}
+
 /** Entradas extras (fundo imagem/vídeo) + label do fundo p/ o filtergraph. */
 function bgInputs(ch: ChromaSettings, bgPath: string | null, W: number, H: number): { inputs: string[]; graph: string } {
-  const cover = (ch.fit ?? "cover") === "cover";
   const bg = ch.background;
   if (bg?.type === "video" && bgPath) {
-    return { inputs: ["-stream_loop", bg.loop ? "-1" : "0", "-i", bgPath], graph: `[1:v]${scaleFit(W, H, cover)},setsar=1[bg]` };
+    return { inputs: ["-stream_loop", bg.loop ? "-1" : "0", "-i", bgPath], graph: bgFit(ch, W, H) };
   }
   if (bg?.type === "image" && bgPath) {
-    return { inputs: ["-loop", "1", "-i", bgPath], graph: `[1:v]${scaleFit(W, H, cover)},setsar=1[bg]` };
+    return { inputs: ["-loop", "1", "-i", bgPath], graph: bgFit(ch, W, H) };
   }
   const col = bg?.type === "color" ? bg.value.replace("#", "0x") : "0x000000";
   return { inputs: [], graph: `color=c=${col}:s=${W}x${H}[bg]` };

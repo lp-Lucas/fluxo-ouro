@@ -57,6 +57,15 @@ export interface ChromaSettings {
   fgClip?: number;     // 0..1 (default 1)  — mais baixo = sujeito mais sólido
   background: ChromaBackground;
   fit?: "cover" | "contain"; // ajuste do fundo (default cover)
+  /**
+   * TRANSFORM do fundo (imagem/vídeo) sobre o cover/contain: zoom + deslocamento.
+   *  • bgScale  1 = 100% (multiplica o tamanho, ao redor do centro).
+   *  • bgX,bgY  deslocamento em FRAÇÃO do frame (0 = centrado; x>0 → direita, y>0 → baixo).
+   * Ausente = neutro. Aplicado igual no preview (shader) e no export (ffmpeg).
+   */
+  bgScale?: number;  // default 1
+  bgX?: number;      // default 0
+  bgY?: number;      // default 0
 }
 
 export const DEFAULT_CHROMA: ChromaSettings = {

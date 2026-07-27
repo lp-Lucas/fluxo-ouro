@@ -36,6 +36,8 @@ uniform int uBgType;    // 0=cor 1=imagem 2=vídeo 3=nenhum(preto)
 uniform vec3 uBgColor;
 uniform vec2 uDstRes, uBgRes;
 uniform bool uBgCover;
+uniform float uBgScale;   // zoom do fundo (1 = 100%)
+uniform vec2 uBgOff;      // deslocamento do fundo (fração da tela; x>0 direita, y>0 baixo)
 in vec2 vUv;
 out vec4 frag;
 const vec3 LW = vec3(0.2126, 0.7152, 0.0722);
@@ -49,13 +51,15 @@ vec2 rgb2uv(vec3 c){
   return vec2((c.b - y) / 1.772 + 0.5, (c.r - y) / 1.402 + 0.5);
 }
 
-// UV do fundo com ajuste cover/contain.
+// UV do fundo com ajuste cover/contain + TRANSFORM do usuário (zoom ao redor do centro +
+// deslocamento). Zoom>1 amplia; off desloca o conteúdo exibido (x>0 direita, y>0 baixo).
 vec2 bgUV(vec2 uv){
+  vec2 t = (uv - 0.5 - uBgOff) / max(uBgScale, 1e-3) + 0.5;
   vec2 s = uDstRes / uBgRes;
   float scale = uBgCover ? max(s.x, s.y) : min(s.x, s.y);
   vec2 scaled = uBgRes * scale;
   vec2 off = (scaled - uDstRes) * 0.5;
-  return (uv * uDstRes + off) / scaled;
+  return (t * uDstRes + off) / scaled;
 }
 
 // Correção de cor (mesma dos dois lados). Aplicada no fim, sobre c.
@@ -280,6 +284,8 @@ export function ColorCanvas({
           gl.uniform1i(U("uKeyChan"), k.r >= k.g && k.r >= k.b ? 0 : k.g >= k.b ? 1 : 2);
           gl.uniform2f(U("uDstRes"), canvas.width, canvas.height);
           gl.uniform1i(U("uBgCover"), (ch.fit ?? "cover") === "cover" ? 1 : 0);
+          gl.uniform1f(U("uBgScale"), ch.bgScale && ch.bgScale > 0 ? ch.bgScale : 1);
+          gl.uniform2f(U("uBgOff"), ch.bgX ?? 0, ch.bgY ?? 0);
 
           const bgT = ch.background?.type;
           const src = bgT === "image" ? bgImgRef.current : bgT === "video" ? bgVidRef.current : null;

@@ -6,6 +6,7 @@ import {
 } from "../../../../shared/captions";
 import { capBar, capChip, capBtnMuted, capGroup, capGroupBtn, capGroupSep, capGroupLabel } from "../legenda/CaptionToolbar";
 import { comBase } from "../../os-session";
+import { buildCutPlan, remapTimeClamped, outputToSource } from "../../../../shared/cutplan";
 
 /**
  * Timeline visual de cortes com forma de onda do áudio + ZOOM.
@@ -172,10 +173,22 @@ export function CutTimeline({
   /** redimensiona um clipe do grupo (nova duração de tela → re-fit no FLOW). */
   onClipResize?: (phraseId: string, duration: number) => void;
 }) {
-  const capsOn = !!onCaptionsChange && !!transcript;
+  // MODO da timeline (toggle no botão ✂ Recorte):
+  //  • recorte OFF (padrão) = TIMELINE REAL: contínua, cortes COLAPSADOS (some as áreas
+  //    cortadas), com legendas + motion. É o que o preview mostra.
+  //  • recorte ON = MODO CORTE: tempo de FONTE, cortes visíveis (onda apagada nas lacunas),
+  //    SÓ pra cortar — sem legendas/motion.
+  const [recorte, setRecorte] = useState(false);
+  const plan = useMemo(() => buildCutPlan(duration, cuts), [duration, cuts]);
+  const outDur = Math.max(0.001, plan.outDuration);
+  const real = !recorte;
+  const axisDur = real ? outDur : duration; // o eixo X representa a SAÍDA (real) ou a FONTE (corte)
+
+  // Legendas e motion SÓ aparecem na timeline real; no modo corte é só onda + cortes.
+  const capsOn = real && !!onCaptionsChange && !!transcript;
   const capH = capsOn ? CAPS : 0;
   const CAP_TOP = RULER + WAVE;
-  const motOn = !!onMotionMove && !!motionGroups && motionGroups.length > 0;
+  const motOn = real && !!onMotionMove && !!motionGroups && motionGroups.length > 0;
   const motH = motOn ? MOT : 0;
   const MOT_TOP = RULER + WAVE + capH;   // faixa dos motions logo abaixo das legendas
   const H = RULER + WAVE + capH + motH;
@@ -188,9 +201,6 @@ export function CutTimeline({
   const [zoom, setZoom] = useState(1);
   const [sel, setSel] = useState<string | null>(null);
   const [capSel, setCapSel] = useState<string | null>(null);
-  // FERRAMENTA DE RECORTE: ligada = arrastar no vazio cria/edita cortes (comportamento antigo).
-  // Desligada (padrão) = arrastar move a AGULHA (scrub), como no Montador — timeline p/ navegar.
-  const [recorte, setRecorte] = useState(false);
   const [motSel, setMotSel] = useState<string | null>(null);
   const [liveDur, setLiveDur] = useState<Record<string, number>>({}); // duração viva por clipe durante o resize
   useEffect(() => { setLiveDur({}); }, [motionGroups]); // reset quando os grupos mudam (re-fit aplicado)
@@ -233,8 +243,17 @@ export function CutTimeline({
     return () => ro.disconnect();
   }, []);
 
-  const xToT = (x: number) => (duration > 0 ? (x / cw) * duration : 0);
-  const tToX = (t: number) => (duration > 0 ? (t / duration) * cw : 0);
+  // tToX recebe tempo de FONTE. No modo REAL colapsa os cortes (remapTimeClamped: a área
+  // cortada some) e o eixo é a SAÍDA; no modo CORTE é linear na fonte. xToT devolve tempo de
+  // FONTE (o que todos os handlers/cortes/legendas/motion esperam) — no real, expande da saída.
+  const tToX = (t: number) => {
+    if (cw <= 0) return 0;
+    return real ? (remapTimeClamped(t, plan) / outDur) * cw : (duration > 0 ? (t / duration) * cw : 0);
+  };
+  const xToT = (x: number) => {
+    if (cw <= 0) return 0;
+    return real ? outputToSource((x / cw) * outDur, plan) : (duration > 0 ? (x / cw) * duration : 0);
+  };
   const snapThresh = duration > 0 ? (9 / cw) * duration : 0;
 
   function snap(t: number): number {
@@ -266,16 +285,21 @@ export function CutTimeline({
     motPtr.current = { kind: "resize", phraseId, startX: e.clientX, startDur };
   };
   useEffect(() => {
-    const pps = cw / Math.max(0.001, duration);
+    // px/segundo do EIXO visível (saída no modo real, onde os motions vivem). O `at` do grupo é
+    // tempo de FONTE — converte o delta pela saída e volta pra fonte (senão o motion "corria"
+    // mais rápido que o cursor quando havia cortes).
+    const pps = cw / Math.max(0.001, axisDur);
     const mv = (e: PointerEvent) => {
       const d = motPtr.current; if (!d) return;
-      const dt = (e.clientX - d.startX) / pps;
+      const dtOut = (e.clientX - d.startX) / pps;
       if (d.kind === "move") {
-        let ns = snap(d.at0 + dt);
-        if (ns < 0) ns = 0; if (ns + d.total > duration) ns = Math.max(0, duration - d.total);
-        onMotionMove?.(d.groupId, +ns.toFixed(3));
+        const at0Out = real ? remapTimeClamped(d.at0, plan) : d.at0;
+        let nsOut = Math.max(0, at0Out + dtOut);
+        if (nsOut + d.total > axisDur) nsOut = Math.max(0, axisDur - d.total);
+        const nsSrc = real ? outputToSource(nsOut, plan) : nsOut;
+        onMotionMove?.(d.groupId, +snap(nsSrc).toFixed(3));
       } else {
-        setLiveDur((prev) => ({ ...prev, [d.phraseId]: Math.max(0.5, Math.min(30, +(d.startDur + dt).toFixed(1))) }));
+        setLiveDur((prev) => ({ ...prev, [d.phraseId]: Math.max(0.5, Math.min(30, +(d.startDur + dtOut).toFixed(1))) }));
       }
     };
     const up = () => {
@@ -285,7 +309,7 @@ export function CutTimeline({
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
     return () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cw, duration, onMotionMove, onClipResize, liveDur]);
+  }, [cw, duration, axisDur, real, plan, onMotionMove, onClipResize, liveDur]);
 
   // Zoom mantendo o tempo sob o cursor (ou o centro) estável.
   function applyZoom(nz: number, anchorClientX?: number) {
@@ -310,66 +334,80 @@ export function CutTimeline({
     const g = cv.getContext("2d")!; g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = COL.bg; g.fillRect(0, 0, cw, H);
 
-    // régua de tempo
-    if (duration > 0) {
-      const step = rulerStep(cw / duration);
+    // régua de tempo — no modo real os rótulos são o tempo de SAÍDA (contínuo); no corte, fonte.
+    if (axisDur > 0) {
+      const step = rulerStep(cw / axisDur);
       g.font = "10px Inter, system-ui, sans-serif";
       g.textBaseline = "middle";
-      for (let t = 0; t <= duration + 1e-6; t += step) {
-        const x = Math.round(tToX(t));
+      for (let a = 0; a <= axisDur + 1e-6; a += step) {
+        const x = Math.round((a / axisDur) * cw);
         g.fillStyle = COL.tick; g.fillRect(x, RULER - 5, 1, 5);
-        g.fillStyle = COL.ruler; g.fillText(fmtRuler(t), x + 4, RULER / 2);
+        g.fillStyle = COL.ruler; g.fillText(fmtRuler(a), x + 4, RULER / 2);
       }
       g.fillStyle = COL.tick; g.fillRect(0, RULER - 1, cw, 1);
     }
 
     const mid = RULER + WAVE / 2;
     const bar = (x: number, color: string) => {
-      const p = peaks ? (peaks[Math.floor((x / cw) * peaks.length)] ?? 0) : 0.12;
+      // amostra o pico pela FONTE — no modo real, x é tempo de SAÍDA, então converte p/ fonte
+      // (senão a onda ficaria embaralhada ao colapsar os cortes).
+      const srcT = xToT(x);
+      const p = peaks ? (peaks[Math.floor((srcT / Math.max(0.001, duration)) * peaks.length)] ?? 0) : 0.12;
       const hh = Math.max(1, p * (WAVE / 2 - 8));
       g.fillStyle = color;
       g.fillRect(x, mid - hh, 1, hh * 2);
     };
 
-    // 1) onda inteira apagada (é o que fica visível nas lacunas = cortes)
-    for (let x = 0; x < cw; x++) bar(x, COL.waveCut);
-
-    // 2) trechos MANTIDOS = blocos arredondados + onda viva por cima
-    const on = cuts.filter((c) => c.enabled).sort((a, b) => a.start - b.start);
-    const kept: Array<[number, number]> = [];
-    let cur = 0;
-    for (const c of on) { if (c.start > cur) kept.push([cur, Math.min(c.start, duration)]); cur = Math.max(cur, c.end); }
-    if (cur < duration) kept.push([cur, duration]);
-
-    for (const [a, b] of kept) {
-      const x0 = tToX(a), x1 = tToX(b);
-      const w = Math.max(2, x1 - x0 - 2);
-      const r = Math.min(10, w / 2);
-      g.beginPath();
-      g.roundRect(x0 + 1, RULER + 4, w, WAVE - 8, r);
+    if (real) {
+      // TIMELINE REAL: um bloco CONTÍNUO (cortes já colapsados no eixo) com a onda viva.
+      // Nada de lacunas/cortes — é o vídeo final, junto.
+      const r = Math.min(10, cw / 2);
+      g.beginPath(); g.roundRect(1, RULER + 4, Math.max(2, cw - 2), WAVE - 8, r);
       g.fillStyle = COL.clipFill; g.fill();
       g.strokeStyle = COL.clipStroke; g.lineWidth = 1; g.stroke();
       g.save();
-      g.beginPath(); g.roundRect(x0 + 1, RULER + 4, w, WAVE - 8, r); g.clip();
-      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(cw, Math.ceil(x1)); x++) bar(x, COL.wave);
+      g.beginPath(); g.roundRect(1, RULER + 4, Math.max(2, cw - 2), WAVE - 8, r); g.clip();
+      for (let x = 0; x < cw; x++) bar(x, COL.wave);
       g.restore();
-    }
+    } else {
+      // MODO CORTE: 1) onda inteira apagada (as lacunas = cortes) + 2) trechos MANTIDOS.
+      for (let x = 0; x < cw; x++) bar(x, COL.waveCut);
+      const on = cuts.filter((c) => c.enabled).sort((a, b) => a.start - b.start);
+      const kept: Array<[number, number]> = [];
+      let cur = 0;
+      for (const c of on) { if (c.start > cur) kept.push([cur, Math.min(c.start, duration)]); cur = Math.max(cur, c.end); }
+      if (cur < duration) kept.push([cur, duration]);
 
-    // corte selecionado: alças discretas nas bordas
-    const selC = cuts.find((c) => c.id === sel);
-    if (selC) {
-      for (const t of [selC.start, selC.end]) {
-        const x = tToX(t);
-        g.fillStyle = COL.sel;
-        g.beginPath(); g.roundRect(x - 2.5, RULER + 8, 5, WAVE - 16, 3); g.fill();
+      for (const [a, b] of kept) {
+        const x0 = tToX(a), x1 = tToX(b);
+        const w = Math.max(2, x1 - x0 - 2);
+        const r = Math.min(10, w / 2);
+        g.beginPath();
+        g.roundRect(x0 + 1, RULER + 4, w, WAVE - 8, r);
+        g.fillStyle = COL.clipFill; g.fill();
+        g.strokeStyle = COL.clipStroke; g.lineWidth = 1; g.stroke();
+        g.save();
+        g.beginPath(); g.roundRect(x0 + 1, RULER + 4, w, WAVE - 8, r); g.clip();
+        for (let x = Math.max(0, Math.floor(x0)); x < Math.min(cw, Math.ceil(x1)); x++) bar(x, COL.wave);
+        g.restore();
       }
-    }
 
-    if (tempCut) {
-      g.fillStyle = COL.temp;
-      g.beginPath();
-      g.roundRect(tToX(tempCut.start), RULER + 4, Math.max(2, tToX(tempCut.end) - tToX(tempCut.start)), WAVE - 8, 6);
-      g.fill();
+      // corte selecionado: alças discretas nas bordas
+      const selC = cuts.find((c) => c.id === sel);
+      if (selC) {
+        for (const t of [selC.start, selC.end]) {
+          const x = tToX(t);
+          g.fillStyle = COL.sel;
+          g.beginPath(); g.roundRect(x - 2.5, RULER + 8, 5, WAVE - 16, 3); g.fill();
+        }
+      }
+
+      if (tempCut) {
+        g.fillStyle = COL.temp;
+        g.beginPath();
+        g.roundRect(tToX(tempCut.start), RULER + 4, Math.max(2, tToX(tempCut.end) - tToX(tempCut.start)), WAVE - 8, 6);
+        g.fill();
+      }
     }
 
     // ── faixa das legendas ──
@@ -422,7 +460,7 @@ export function CutTimeline({
     }
     // O playhead NÃO é desenhado aqui: ele é um <div> leve (senão a onda inteira
     // seria redesenhada a cada frame → travava o preview a ~10fps).
-  }, [peaks, cuts, sel, cw, duration, tempCut, capsOn, capH, CAP_TOP, H, lines, capSel, tempCap, motOn, motH, MOT_TOP]);
+  }, [peaks, cuts, sel, cw, duration, tempCut, capsOn, capH, CAP_TOP, H, lines, capSel, tempCap, motOn, motH, MOT_TOP, real, outDur, axisDur, plan]);
 
   // Mantém o playhead à vista durante o play (modo legado, sem clock).
   useEffect(() => {
@@ -442,12 +480,16 @@ export function CutTimeline({
   const tToXRef = useRef(tToX); tToXRef.current = tToX;
   const playingRef = useRef(playing); playingRef.current = playing;
   const durationRef = useRef(duration); durationRef.current = duration;
+  // tempo EXIBIDO (badge/relógio): no modo real é o tempo de SAÍDA (bate com a régua); no corte, fonte.
+  const dispTimeRef = useRef((t: number) => t); dispTimeRef.current = (t: number) => (real ? remapTimeClamped(t, plan) : t);
+  const axisDurRef = useRef(axisDur); axisDurRef.current = axisDur;
   useEffect(() => {
     if (!clock) return;
     const apply = (t: number) => {
       if (playheadRef.current) playheadRef.current.style.transform = `translateX(${tToXRef.current(t).toFixed(1)}px)`;
-      if (badgeRef.current) badgeRef.current.textContent = t.toFixed(2);
-      if (clockLabelRef.current) clockLabelRef.current.textContent = `${fmt(t)} / ${fmt(durationRef.current)}`;
+      const dt = dispTimeRef.current(t);
+      if (badgeRef.current) badgeRef.current.textContent = dt.toFixed(2);
+      if (clockLabelRef.current) clockLabelRef.current.textContent = `${fmt(dt)} / ${fmt(axisDurRef.current)}`;
       const sc = scrollRef.current;
       if (sc && playingRef.current) {
         const px = tToXRef.current(t);
@@ -698,15 +740,21 @@ export function CutTimeline({
             <div ref={badgeRef} style={{ position: "absolute", top: 1, left: 0, transform: "translateX(-50%)",
               background: "#0a0a0e", border: "1px solid var(--border)", borderRadius: 8,
               padding: "1px 8px", fontSize: 11, color: "#fff", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
-              {(clock ? clock.time : currentTime).toFixed(2)}
+              {(real ? remapTimeClamped(clock ? clock.time : currentTime, plan) : (clock ? clock.time : currentTime)).toFixed(2)}
             </div>
           </div>
 
           {/* CLIPES de MOTION (DOM) — mesmo visual do editor do FLOW: preview + duração + ×velocidade */}
           {motOn && motionGroups!.flatMap((grp) => {
             const total = groupEnd(grp) - grp.at;
+            // Motion vive na TIMELINE REAL (tempo de saída). O `at` é fonte → mapeia p/ saída; os
+            // clipes se estendem por tempo de TELA (já é saída). Assim o motion fica no lugar certo
+            // mesmo com cortes antes dele (tToX(seg.start) re-mapearia o offset de tela como fonte).
+            const grpOut = real ? remapTimeClamped(grp.at, plan) : grp.at;
+            const outToX = (o: number) => (o / axisDur) * cw;
             return groupSegs(grp).map((seg) => {
-              const left = tToX(seg.start), w = Math.max(18, tToX(seg.end) - tToX(seg.start));
+              const outStart = grpOut + (seg.start - grp.at); // offset de tela (saída) a partir do início do grupo
+              const left = outToX(outStart), w = Math.max(18, (seg.dur / axisDur) * cw);
               const raw = seg.raw ?? seg.dur, speed = raw / Math.max(0.1, seg.dur), fast = speed > 1.5 || speed < 0.7;
               return (
                 <div key={seg.phraseId} onPointerDown={(e) => startMotionMove(e, grp.id, grp.at, total)}
@@ -739,13 +787,15 @@ export function CutTimeline({
           {playing ? "❚❚" : "▶"}
         </button>
         <span ref={clockLabelRef} style={{ fontSize: 13, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
-          {fmt(clock ? clock.time : currentTime)} / {fmt(duration)}
+          {fmt(real ? remapTimeClamped(clock ? clock.time : currentTime, plan) : (clock ? clock.time : currentTime))} / {fmt(axisDur)}
         </span>
         <button onClick={() => setRecorte((v) => !v)}
-          title="Recorte LIGADO: arraste no vazio p/ criar cortes e edite os blocos. DESLIGADO: arraste p/ mover a agulha (navegar); as setas ◀▶ também navegam (Shift = 1s)."
+          title={recorte
+            ? "MODO CORTE ligado: a timeline mostra a fonte inteira com os cortes (áreas apagadas). Arraste no vazio p/ criar corte, edite os blocos. Só cortar — legendas/motion escondidos."
+            : "TIMELINE REAL: contínua, sem as áreas cortadas, com legendas + motion (igual ao preview). Clique aqui p/ entrar no MODO CORTE e recortar o vídeo."}
           style={{ height: 30, padding: "0 12px", borderRadius: 8, fontSize: 13, cursor: "pointer", border: "1px solid var(--border)",
             background: recorte ? "var(--accent)" : "var(--panel3)", color: recorte ? "#141414" : "var(--text)", fontWeight: recorte ? 600 : 400 }}>
-          ✂ Recorte
+          ✂ {recorte ? "Recorte" : "Recortar"}
         </button>
         <span style={{ flex: 1 }} />
         <button onClick={() => applyZoom(zoom / 1.5)} disabled={zoom <= ZMIN} style={zoomBtn}>−</button>

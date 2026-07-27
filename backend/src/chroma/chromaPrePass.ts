@@ -64,7 +64,11 @@ function keyingChain(ch: ChromaSettings): string {
   // RAMPA CENTRADA (igual ao shader): a borda fica CENTRADA em similarity, com largura
   // smoothness. lo = similarity - smoothness/2 (clamp 0..1); ffmpeg ramp = [lo, lo+blend].
   const blend = Math.max(1e-4, ch.smoothness);
-  const sim = Math.max(0, Math.min(1, ch.similarity - ch.smoothness * 0.5));
+  // PISO 0.01: o chromakey do ffmpeg exige similarity ∈ [0.01, 1]. Abaixo disso ele retorna
+  // AVERROR(ERANGE) = "Numerical result out of range" e o render QUEBRA. A rampa centrada
+  // (similarity − smoothness/2) zera com tolerância baixa → travava a exportação. O shader
+  // usa o MESMO piso (paridade). 0.01 é imperceptível (~3 níveis de 8-bit só na borda extrema).
+  const sim = Math.max(0.01, Math.min(1, ch.similarity - ch.smoothness * 0.5));
   const bgClip = (ch.bgClip ?? 0).toFixed(4);
   const span = Math.max((ch.fgClip ?? 1) - (ch.bgClip ?? 0), 0.0001).toFixed(4);
   // clip: remapeia o alpha [bgClip..fgClip] → [0..1] (mesma matemática do shader).

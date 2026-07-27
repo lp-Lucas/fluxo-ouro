@@ -94,7 +94,7 @@ void main(){
     // rampa ia de similarity PRA CIMA, então mexer na suavidade puxava o meio pra dentro da
     // pessoa = parecia mexer na tolerância. Agora são independentes. (export: mesmo lo/largura.)
     float diff = length(rgb2uv(c) - rgb2uv(uKeyRGB)) / 1.41421356;
-    float lo = clamp(uSimilarity - uSmoothness * 0.5, 0.0, 1.0);
+    float lo = clamp(uSimilarity - uSmoothness * 0.5, 0.01, 1.0); // piso 0.01 = paridade c/ o chromakey do ffmpeg (min 0.01)
     float alpha = clamp((diff - lo) / max(uSmoothness, 1e-4), 0.0, 1.0);
     // clip: remapeia [bgClip..fgClip] → [0..1] (sujeito sólido / limpa fundo)
     alpha = clamp((alpha - uBgClip) / max(uFgClip - uBgClip, 1e-4), 0.0, 1.0);

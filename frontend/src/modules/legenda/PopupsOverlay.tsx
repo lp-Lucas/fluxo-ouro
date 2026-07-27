@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Popup } from "../../../../shared/timeline";
-import type { CutPlan } from "../../../../shared/cutplan";
+import { remapTimeClamped, type CutPlan } from "../../../../shared/cutplan";
 import { SupportPopupView, FullscreenPopupView } from "../editor/popups/PopupViews";
 import { useFrameTime, type FrameClockLike } from "../../workspace/frameClock";
 import { comBase } from "../../os-session";
@@ -11,6 +11,12 @@ import { comBase } from "../../os-session";
  * (motion do FLOW) usa um <video> sincronizado ao tempo da timeline (o export usa
  * <OffthreadVideo> — mesma composição via FullscreenPopupView).
  *
+ * TEMPO REAL (pós-cortes): o clock corre em tempo de FONTE (bruto). Aqui convertemos
+ * TUDO — o relógio atual E o `at` de cada popup — para tempo de SAÍDA (remapTimeClamped),
+ * onde os cortes já foram emendados. Assim a janela do popup é contígua: um corte no meio
+ * de um motion NÃO parte a janela (antes o motion "sumia do nada" no corte, porque o `at`
+ * era fonte, a `duration` era saída e o `time` saltava o corte). Sem plano = identidade.
+ *
  * FOLHA do FrameClock (P1): assina o clock e re-renderiza por frame SOZINHA (subtree
  * pequena — só os popups), sem acordar o preview inteiro.
  */
@@ -18,41 +24,37 @@ export function PopupsOverlay({ popups, clock, playing = false, plan }: {
   popups: Popup[]; clock: FrameClockLike; playing?: boolean; plan?: CutPlan;
 }) {
   const time = useFrameTime(clock);
+  const toOut = (t: number) => (plan ? remapTimeClamped(t, plan) : t);
+  const tOut = toOut(time);
   return (
     <>
-      {popups.map((p) =>
-        p.type === "support"
-          ? <SupportPopupView key={p.id} p={p} time={time} />
-          : <FullscreenPopupView key={p.id} p={p} time={time}
-              videoSlot={(src, fp) => <PreviewFullscreenVideo src={src} at={fp.at} duration={fp.duration} time={time} playing={playing} plan={plan} />} />,
-      )}
+      {popups.map((p) => {
+        const po = { ...p, at: toOut(p.at) }; // popup na timeline REAL
+        return po.type === "support"
+          ? <SupportPopupView key={po.id} p={po} time={tOut} />
+          : <FullscreenPopupView key={po.id} p={po} time={tOut}
+              videoSlot={(src, fp) => <PreviewFullscreenVideo src={src} at={fp.at} duration={fp.duration} time={tOut} playing={playing} />} />;
+      })}
     </>
   );
 }
 
 /**
- * <video> mudo sincronizado ao tempo do preview. O offset é medido em TEMPO DE
- * SAÍDA (pós-cortes): o popup IGNORA os cortes — só o início é reposicionado, e o
- * vídeo toca contínuo por toda a sua duração, igual ao export.
+ * <video> mudo sincronizado ao tempo do preview. `time` e `at` JÁ CHEGAM em tempo de
+ * SAÍDA (o PopupsOverlay remapeou) — o popup IGNORA os cortes: só o início é reposicionado
+ * e o vídeo toca contínuo por toda a sua duração, igual ao export. Por isso o alvo é uma
+ * subtração direta (`time - at`), sem remapear de novo.
  *
  * FLUIDEZ: o vídeo TOCA NATIVAMENTE junto com o principal (play/pause espelhado) e o
  * seek vira só CORREÇÃO DE DRIFT esparsa (>0.2s). Antes, sem play, ele avançava SÓ por
  * seeks (~10+/s) — a tempestade de seeks era o travamento do preview com popup de vídeo.
  */
-function PreviewFullscreenVideo({ src, at, duration, time, playing, plan }: {
-  src: string; at: number; duration: number; time: number; playing: boolean; plan?: CutPlan;
+function PreviewFullscreenVideo({ src, at, duration, time, playing }: {
+  src: string; at: number; duration: number; time: number; playing: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  // alvo em tempo de SAÍDA (função pura do tempo atual)
-  let target = time - at;
-  if (plan) {
-    const remapStart = (t: number) => {
-      for (const s of plan.segments) if (t <= s.srcEnd) return s.outStart + Math.max(0, t - s.srcStart);
-      return plan.outDuration;
-    };
-    target = remapStart(time) - remapStart(at);
-  }
-  target = Math.max(0, Math.min(duration, target));
+  // alvo em tempo de SAÍDA (time/at já vêm remapeados) — subtração pura
+  const target = Math.max(0, Math.min(duration, time - at));
   const ativo = playing && target > 0 && target < duration; // dentro da janela do popup
   // refs vivos p/ os handlers de load (play() pode ser chamado ANTES do vídeo carregar sob a
   // rede do subpath — sem isto o motion ficava num frame congelado por nunca ter tocado).

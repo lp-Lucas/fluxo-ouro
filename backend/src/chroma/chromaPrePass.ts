@@ -86,17 +86,26 @@ function scaleFit(W: number, H: number, cover: boolean): string {
 }
 
 /** scale+crop (cover/contain) e depois o TRANSFORM do usuário (zoom + deslocamento). Igual ao
- * shader: zoom ao redor do centro, off em fração do frame. Só entra quando não-neutro. */
+ * shader: zoom ao redor do centro, off em fração do frame. Só entra quando não-neutro.
+ * Usa pad (zoom-out) / crop (zoom-in) — SEM `color=s=WxH` (aquele token quebrava o ffmpeg). */
 function bgFit(ch: ChromaSettings, W: number, H: number): string {
   const cover = (ch.fit ?? "cover") === "cover";
   const base = `[1:v]${scaleFit(W, H, cover)},setsar=1`;
   const s = ch.bgScale && ch.bgScale > 0 ? ch.bgScale : 1;
   const x = ch.bgX ?? 0, y = ch.bgY ?? 0;
   if (s === 1 && x === 0 && y === 0) return `${base}[bg]`;
-  // amplia o fundo (já em WxH) por `s` e sobrepõe num fundo preto WxH, centrado + deslocado.
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
   const bw = Math.max(2, Math.round(W * s)), bh = Math.max(2, Math.round(H * s));
-  const ox = Math.round((W - bw) / 2 + x * W), oy = Math.round((H - bh) / 2 + y * H);
-  return `${base},scale=${bw}:${bh}[bgz];color=c=black:s=${W}x${H}[bgb];[bgb][bgz]overlay=${ox}:${oy}[bg]`;
+  if (bw <= W && bh <= H) {
+    // fundo MENOR que o frame → posiciona num canvas preto via pad (bordas pretas).
+    const px = clamp(Math.round((W - bw) / 2 + x * W), 0, W - bw);
+    const py = clamp(Math.round((H - bh) / 2 + y * H), 0, H - bh);
+    return `${base},scale=${bw}:${bh},pad=${W}:${H}:${px}:${py}:color=black[bg]`;
+  }
+  // fundo MAIOR que o frame (zoom-in) → recorta a janela W×H, centrada + deslocada.
+  const cx = clamp(Math.round((bw - W) / 2 - x * W), 0, bw - W);
+  const cy = clamp(Math.round((bh - H) / 2 - y * H), 0, bh - H);
+  return `${base},scale=${bw}:${bh},crop=${W}:${H}:${cx}:${cy}[bg]`;
 }
 
 /** Entradas extras (fundo imagem/vídeo) + label do fundo p/ o filtergraph. */

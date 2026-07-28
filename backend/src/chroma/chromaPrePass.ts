@@ -201,7 +201,9 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
     "-y", "-i", input.inputPath, ...inputs,
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", part,
+    // -f mp4 EXPLÍCITO: o nome termina em `.part` (escrita atômica) e o ffmpeg escolheria o
+    // muxer pela extensão — `.part` não é conhecida → "Unable to choose an output format".
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", "-f", "mp4", part,
   ], path.dirname(input.outputPath), input.signal, "chroma");
   await promover(part, input.outputPath, "chroma");
 
@@ -236,7 +238,7 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
     "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "0", "-crf", "20",
     "-r", String(fps),
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-    "-an", part,
+    "-an", "-f", "webm", part, // -f webm: o nome termina em `.part` (não dá pra inferir o muxer)
   ], path.dirname(input.outputPath), input.signal, "chroma-pessoa");
   await promover(part, input.outputPath, "chroma-pessoa");
 
@@ -271,7 +273,7 @@ export async function chromaBackgroundPass(input: ChromaPassInput): Promise<stri
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
     ...durArg,
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", part,
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", "-f", "mp4", part,
   ], path.dirname(input.outputPath), input.signal, "chroma-fundo");
   await promover(part, input.outputPath, "chroma-fundo");
 

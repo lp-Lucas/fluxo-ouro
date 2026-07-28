@@ -191,7 +191,10 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
   parts.push(`[src]${keyingChain(ch)}[keyed]`);
   const { inputs, graph } = bgInputs(ch, input.bgPath, W, H);
   parts.push(graph);
-  parts.push(`[bg][keyed]overlay=shortest=1:format=auto,format=yuv420p[comp]`);
+  // tpad clone: estende o último frame por +1s. O compositor do Remotion extrai frame no
+  // LIMITE exato da duração e um vídeo que termina "em cima" dá "No frame found at position"
+  // (reproduzido no harness). Com frames reais além do fim + -t cravando a duração, a borda some.
+  parts.push(`[bg][keyed]overlay=shortest=1:format=auto,format=yuv420p,tpad=stop_mode=clone:stop_duration=1[comp]`);
 
   let last = "[comp]";
   const cube = writeColorCube(input.color, input.userLutPath, input.outputPath);
@@ -203,7 +206,14 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
     "-map", last, "-map", "0:a?",
     // -f mp4 EXPLÍCITO: o nome termina em `.part` (escrita atômica) e o ffmpeg escolheria o
     // muxer pela extensão — `.part` não é conhecida → "Unable to choose an output format".
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", "-f", "mp4", part,
+    // Duração: com durationSec conhecido, o corte é pelo -t (dur + folga do tpad) e o -shortest
+    // SAI — senão o áudio (que termina exato) cortaria o vídeo de volta e anularia o tpad.
+    // Sem durationSec (não deveria ocorrer), -shortest segura o fundo infinito (color/loop).
+    ...OUT_H264, "-r", String(fps),
+    ...(input.durationSec && input.durationSec > 0
+      ? ["-t", (input.durationSec + 0.6).toFixed(3)]
+      : ["-shortest"]),
+    "-c:a", "aac", "-b:a", "192k", "-f", "mp4", part,
   ], path.dirname(input.outputPath), input.signal, "chroma");
   await promover(part, input.outputPath, "chroma");
 
@@ -227,7 +237,7 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
   let chain = `[src]${keyingChain(ch)}`;
   const cube = writeColorCube(input.color, input.userLutPath, input.outputPath);
   if (cube) chain += `,lut3d=file='${path.basename(cube)}':interp=trilinear`; // cor preserva o alpha
-  chain += `,format=yuva420p[out]`;
+  chain += `,format=yuva420p,tpad=stop_mode=clone:stop_duration=1[out]`; // frames além do fim (borda do compositor)
   parts.push(chain);
 
   await runFfmpeg([
@@ -237,6 +247,7 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
     // WebM VP9 com alpha. -auto-alt-ref 0 é obrigatório p/ preservar o alpha.
     "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "0", "-crf", "20",
     "-r", String(fps),
+    ...(input.durationSec && input.durationSec > 0 ? ["-t", (input.durationSec + 0.6).toFixed(3)] : []),
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
     "-an", "-f", "webm", part, // -f webm: o nome termina em `.part` (não dá pra inferir o muxer)
   ], path.dirname(input.outputPath), input.signal, "chroma-pessoa");
@@ -260,20 +271,27 @@ export async function chromaBackgroundPass(input: ChromaPassInput): Promise<stri
 
   const { inputs, graph } = bgInputs(ch, input.bgPath, W, H);
   const parts: string[] = [graph];
-  let last = "[bg]";
+  // tpad clone no plano de fundo: um bg VÍDEO sem loop mais curto que o principal terminava
+  // antes → mesma borda "No frame found" do compositor. Fundo infinito (cor/imagem/loop) passa
+  // reto (o tpad nunca dispara) e o -t abaixo crava a duração.
+  parts.push(`[bg]tpad=stop_mode=clone:stop_duration=1[bgp]`);
+  let last = "[bgp]";
   const cube = writeColorCube(input.color, input.userLutPath, input.outputPath);
-  if (cube) { parts.push(`[bg]lut3d=file='${path.basename(cube)}':interp=trilinear[out]`); last = "[out]"; }
+  if (cube) { parts.push(`[bgp]lut3d=file='${path.basename(cube)}':interp=trilinear[out]`); last = "[out]"; }
 
   // o áudio vem do vídeo original (input 0); o fundo é a imagem/cor/vídeo. Como o
   // fundo pode ser infinito (cor/imagem/loop), limita a duração ao tamanho do vídeo
-  // (-shortest não basta se o vídeo não tiver faixa de áudio).
-  const durArg = input.durationSec && input.durationSec > 0 ? ["-t", input.durationSec.toFixed(3)] : [];
+  // (-shortest não basta se o vídeo não tiver faixa de áudio). +0.6 = folga pro
+  // compositor extrair o frame da borda (o tpad garante frames reais lá).
+  const durArg = input.durationSec && input.durationSec > 0 ? ["-t", (input.durationSec + 0.6).toFixed(3)] : [];
   await runFfmpeg([
     "-y", "-i", input.inputPath, ...inputs,
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
     ...durArg,
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", "-f", "mp4", part,
+    // -shortest SÓ sem durationSec (o áudio cortaria a folga do tpad de volta).
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k",
+    ...(durArg.length ? [] : ["-shortest"]), "-f", "mp4", part,
   ], path.dirname(input.outputPath), input.signal, "chroma-fundo");
   await promover(part, input.outputPath, "chroma-fundo");
 

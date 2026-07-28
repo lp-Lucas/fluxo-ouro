@@ -30,7 +30,12 @@ function runFfmpeg(args: string[], cwd: string, signal: AbortSignal | undefined,
     proc.on("error", reject);
     proc.on("close", (code) => {
       signal?.removeEventListener("abort", onAbort);
-      code === 0 ? resolve() : reject(new Error(`ffmpeg (${label}) saiu com código ${code}: ${stderr.slice(-600)}`));
+      if (code === 0) { resolve(); return; }
+      // Extrai a LINHA-CHAVE do erro (o .slice do tail costumava cortá-la no meio) + o tail.
+      const key = stderr.split(/\r?\n/).reverse().find((l) =>
+        /error|invalid|not divisible|out of range|no packets|incorrect parameters|failed|cannot|unable/i.test(l));
+      const detalhe = [key?.trim(), stderr.slice(-800)].filter(Boolean).join(" ⟵ ");
+      reject(new Error(`ffmpeg (${label}) saiu com código ${code}: ${detalhe}`));
     });
   });
 }
@@ -142,8 +147,13 @@ export interface ChromaPassInput {
   width: number;
   height: number;
   durationSec?: number; // limita o fundo infinito (cor/imagem/loop) ao tamanho do vídeo
+  fps?: number;         // framerate de SAÍDA (CFR). Normaliza entradas VFR (celular) — sem isto o
+                        // x264 podia falhar ao abrir ("incorrect parameters such as rate"). Default 30.
   signal?: AbortSignal;
 }
+
+/** Dimensão par e ≥ 2 (yuv420p/H.264 exigem par; ímpar quebra o filtergraph e o encoder). */
+const par = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 
 /**
  * MODO ASSADO (1 passe, caminho comum): keying→despill→composição sobre o fundo→cor.
@@ -152,7 +162,9 @@ export interface ChromaPassInput {
  */
 export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
   if (fs.existsSync(input.outputPath)) return input.outputPath;
-  const { chroma: ch, width: W, height: H } = input;
+  const { chroma: ch } = input;
+  const W = par(input.width), H = par(input.height);
+  const fps = input.fps && input.fps > 0 ? input.fps : 30;
 
   const parts: string[] = [`[0:v]scale=${W}:${H},format=yuv420p,setsar=1[src]`];
   parts.push(`[src]${keyingChain(ch)}[keyed]`);
@@ -168,7 +180,7 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
     "-y", "-i", input.inputPath, ...inputs,
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
-    ...OUT_H264, "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
   ], path.dirname(input.outputPath), input.signal, "chroma");
 
   if (cube) fs.rm(cube, () => {});
@@ -182,7 +194,9 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
  */
 export async function chromaPersonPass(input: ChromaPassInput): Promise<string> {
   if (fs.existsSync(input.outputPath)) return input.outputPath;
-  const { chroma: ch, width: W, height: H } = input;
+  const { chroma: ch } = input;
+  const W = par(input.width), H = par(input.height);
+  const fps = input.fps && input.fps > 0 ? input.fps : 30;
 
   const parts: string[] = [`[0:v]scale=${W}:${H},format=yuv420p,setsar=1[src]`];
   let chain = `[src]${keyingChain(ch)}`;
@@ -197,6 +211,7 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
     "-map", "[out]",
     // WebM VP9 com alpha. -auto-alt-ref 0 é obrigatório p/ preservar o alpha.
     "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "0", "-crf", "20",
+    "-r", String(fps),
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
     "-an", input.outputPath,
   ], path.dirname(input.outputPath), input.signal, "chroma-pessoa");
@@ -212,7 +227,9 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
  */
 export async function chromaBackgroundPass(input: ChromaPassInput): Promise<string> {
   if (fs.existsSync(input.outputPath)) return input.outputPath;
-  const { chroma: ch, width: W, height: H } = input;
+  const { chroma: ch } = input;
+  const W = par(input.width), H = par(input.height);
+  const fps = input.fps && input.fps > 0 ? input.fps : 30;
 
   const { inputs, graph } = bgInputs(ch, input.bgPath, W, H);
   const parts: string[] = [graph];
@@ -229,7 +246,7 @@ export async function chromaBackgroundPass(input: ChromaPassInput): Promise<stri
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
     ...durArg,
-    ...OUT_H264, "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
   ], path.dirname(input.outputPath), input.signal, "chroma-fundo");
 
   if (cube) fs.rm(cube, () => {});

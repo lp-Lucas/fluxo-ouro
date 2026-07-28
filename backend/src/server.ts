@@ -642,7 +642,7 @@ async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageM
       color: props.color ?? {},
       userLutPath: props.color?.lut?.file ? resolveAssetPath(props.color.lut.file, props.projectId) : null,
       bgPath: chromaBgPath, // fundo imagem/vídeo (local) — null se cor/nenhum
-      width, height, durationSec: props.durationSec, signal: ac.signal,
+      width, height, durationSec: props.durationSec, fps, signal: ac.signal,
     };
 
     if (chromaLayered) {

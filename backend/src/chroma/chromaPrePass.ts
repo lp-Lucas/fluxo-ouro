@@ -6,6 +6,26 @@ import { parseCube } from "../../../shared/lut.js";
 import { isColorNeutral } from "../../../shared/color.js";
 import type { ColorSettings } from "../../../shared/color.js";
 import type { ChromaSettings } from "../../../shared/chroma.js";
+import { probeDuration } from "../flow/ffmpeg.js";
+
+/**
+ * Cache VÁLIDO? Existe, não é 0-byte E o ffprobe lê duração > 0. Tentativas que falhavam no
+ * encoder deixavam um MP4 0-byte/truncado no lugar; o `if (existsSync) return` devolvia esse
+ * arquivo podre e o Remotion quebrava com "Invalid data found when processing input 0". Agora
+ * o cache é conferido antes de reusar.
+ */
+async function cacheOk(p: string): Promise<boolean> {
+  try { return fs.existsSync(p) && fs.statSync(p).size > 1024 && (await probeDuration(p)) > 0; }
+  catch { return false; }
+}
+
+/** Escrita ATÔMICA: valida o `.part` (duração > 0) e só então promove pro nome final (rename
+ *  atômico). Um ffmpeg morto/falho no meio nunca deixa um final aparentemente-ok e corrompido. */
+async function promover(part: string, outputPath: string, label: string): Promise<void> {
+  const d = await probeDuration(part).catch(() => 0);
+  if (!(d > 0)) { try { fs.rmSync(part, { force: true }); } catch { /* */ } throw new Error(`${label}: ffmpeg gerou saída inválida (sem frames/duração).`); }
+  fs.renameSync(part, outputPath);
+}
 
 /** Mata a árvore de processos (Windows: taskkill /T; Unix: SIGKILL). */
 function killTree(pid: number | undefined) {
@@ -161,7 +181,8 @@ const par = (n: number) => Math.max(2, Math.round(n / 2) * 2);
  * popups/legendas SEM cor — igual ao preview.
  */
 export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
-  if (fs.existsSync(input.outputPath)) return input.outputPath;
+  if (await cacheOk(input.outputPath)) return input.outputPath;
+  const part = input.outputPath + ".part";
   const { chroma: ch } = input;
   const W = par(input.width), H = par(input.height);
   const fps = input.fps && input.fps > 0 ? input.fps : 30;
@@ -180,8 +201,9 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
     "-y", "-i", input.inputPath, ...inputs,
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", part,
   ], path.dirname(input.outputPath), input.signal, "chroma");
+  await promover(part, input.outputPath, "chroma");
 
   if (cube) fs.rm(cube, () => {});
   return input.outputPath;
@@ -193,7 +215,8 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
  * de um popup "atrás da pessoa".
  */
 export async function chromaPersonPass(input: ChromaPassInput): Promise<string> {
-  if (fs.existsSync(input.outputPath)) return input.outputPath;
+  if (await cacheOk(input.outputPath)) return input.outputPath;
+  const part = input.outputPath + ".part";
   const { chroma: ch } = input;
   const W = par(input.width), H = par(input.height);
   const fps = input.fps && input.fps > 0 ? input.fps : 30;
@@ -213,8 +236,9 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
     "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "0", "-crf", "20",
     "-r", String(fps),
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-    "-an", input.outputPath,
+    "-an", part,
   ], path.dirname(input.outputPath), input.signal, "chroma-pessoa");
+  await promover(part, input.outputPath, "chroma-pessoa");
 
   if (cube) fs.rm(cube, () => {});
   return input.outputPath;
@@ -226,7 +250,8 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
  * recebe cortes/zoom; a pessoa transparente entra por cima.
  */
 export async function chromaBackgroundPass(input: ChromaPassInput): Promise<string> {
-  if (fs.existsSync(input.outputPath)) return input.outputPath;
+  if (await cacheOk(input.outputPath)) return input.outputPath;
+  const part = input.outputPath + ".part";
   const { chroma: ch } = input;
   const W = par(input.width), H = par(input.height);
   const fps = input.fps && input.fps > 0 ? input.fps : 30;
@@ -246,8 +271,9 @@ export async function chromaBackgroundPass(input: ChromaPassInput): Promise<stri
     "-filter_complex", parts.join(";"),
     "-map", last, "-map", "0:a?",
     ...durArg,
-    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", input.outputPath,
+    ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k", "-shortest", part,
   ], path.dirname(input.outputPath), input.signal, "chroma-fundo");
+  await promover(part, input.outputPath, "chroma-fundo");
 
   if (cube) fs.rm(cube, () => {});
   return input.outputPath;

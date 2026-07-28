@@ -115,6 +115,11 @@ export async function renderVideo(input: RenderInput): Promise<void> {
     codec: "h264",
     outputLocation: input.outputPath,
     inputProps,
+    // CONCORRÊNCIA BAIXA (default 2, override RENDER_CONCURRENCY): cada worker é uma aba do
+    // Chrome + threads do compositor Rust. Na KVM8 (PROD compartilhado dos 220 clientes) o
+    // default do Remotion (metade dos cores) estourava o limite de threads do serviço —
+    // "failed to spawn thread: Resource temporarily unavailable" — e derrubava o render.
+    concurrency: Math.max(1, Number(process.env.RENDER_CONCURRENCY ?? 2)),
     timeoutInMilliseconds: 120000, // dá folga p/ carregar fontes/vídeo
     // Encaminha os console.log da composição (headless) para o stdout do backend.
     onBrowserLog: (log) => { if (log.text.includes("[COMPO]")) console.log(log.text); },

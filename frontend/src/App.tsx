@@ -725,7 +725,8 @@ export function App() {
                   videoFile={videoFile ?? undefined} onExposeResize={exposeResize} /> ) },
               { id: "export", title: "Exportar", icon: <Icon name="export" size={15} />, startCollapsed: true, node: (
                 <ExportPanel videoFile={videoFile} transcript={transcript} style={captionStyle}
-                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} audio={audio} projectId={projectId} captions={captions} /> ) },
+                  durationSec={docExtra?.durationSec ?? 0} cuts={cuts} zooms={zooms} popups={popups} color={effectiveColor} chroma={chroma} music={music} audio={audio} projectId={projectId} captions={captions}
+                  sourceVideo={docExtra?.sourceVideo} docWidth={docExtra?.width} docHeight={docExtra?.height} /> ) },
             ]} />
             </div>{/* /CONFIGS */}
 

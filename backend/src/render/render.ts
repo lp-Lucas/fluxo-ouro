@@ -6,16 +6,21 @@ import { selectComposition, renderMedia, renderStill } from "@remotion/renderer"
 const REMOTION_ENTRY = path.resolve("../remotion/src/index.ts");
 
 /**
- * Empacota o projeto Remotion. Em dev, rebundlar a cada render garante que as
- * mudanças na composição sempre entram (sem cache stale). Custa alguns segundos.
+ * Empacota o projeto Remotion. O bundle é CACHEADO por processo: empacotar leva vários
+ * segundos e a composição NÃO muda entre renders do mesmo processo — no PROD (KVM8) o
+ * serviço reinicia no deploy (systemctl restart), então cada deploy pega um bundle fresco.
+ * Antes rebundlava a cada "Renderizar MP4" → puro desperdício no caminho mais usado.
+ * (Em dev, reinicie o backend p/ pegar mudanças na composição — ou apague o cache abaixo.)
  *
  * extensionAlias `.js` → `.ts`: os módulos de shared/ importam com extensão `.js`
  * (exigência do Node ESM no backend compilado). O webpack do Remotion, sozinho, não
  * mapeia `.js` de volta pra `.ts` e quebra em "Can't resolve './cutplan.js'". Este
  * override faz o webpack tentar `.ts`/`.tsx` antes do `.js` literal.
  */
+let serveUrlCache: Promise<string> | null = null;
 async function getServeUrl(): Promise<string> {
-  return bundle({
+  if (serveUrlCache) return serveUrlCache;
+  serveUrlCache = bundle({
     entryPoint: REMOTION_ENTRY,
     webpackOverride: (config) => ({
       ...config,
@@ -28,7 +33,8 @@ async function getServeUrl(): Promise<string> {
         },
       },
     }),
-  });
+  }).catch((e) => { serveUrlCache = null; throw e; }); // falhou: não cacheia o erro
+  return serveUrlCache;
 }
 
 /**

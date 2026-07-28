@@ -167,8 +167,9 @@ registraExecutores(async ({ projetoId, videoPath, props, onProgress, signal }) =
   signal.addEventListener("abort", onAbort);
 
   try {
-    const fake = { filename: nome, path: destino, originalname: nome } as Express.Multer.File;
-    await runRender(jobId, fake, JSON.stringify({ ...props, projectId: projetoId }));
+    // Vídeo já hard-linkado em uploads/ como `nome` → descritor de fonte (apaga o link no fim).
+    const srcOs: RenderSrc = { path: destino, key: nome, servedUrl: `http://localhost:${PORT}/uploads/${nome}`, cleanupOnDone: true };
+    await runRender(jobId, srcOs, JSON.stringify({ ...props, projectId: projetoId }));
     const j = jobs.get(jobId);
     if (j?.status === "error") throw new Error(j.error ?? "render falhou");
     if (!j?.outPath) throw new Error("render terminou sem arquivo de saida");
@@ -468,6 +469,17 @@ type JobStatus = "preparing" | "rendering" | "done" | "error";
 interface Job { status: JobStatus; progress: number; outPath?: string; error?: string; }
 const jobs = new Map<string, Job>();
 
+/**
+ * Fonte do render: local (p/ os pré-passos ffmpeg) + URL servida (p/ o Remotion quando
+ * NÃO há pré-passo) + chave estável de cache. Dois caminhos:
+ *  • UPLOAD (sessão sem projeto salvo): o vídeo veio no multipart. cleanup = apaga no fim.
+ *  • PROJETO (projectId): usa o vídeo JÁ salvo em assets/ — SEM re-upload (rápido) e a chave
+ *    de cache é o nome do arquivo (estável) → os pré-passos (chroma/cor/áudio) são reusados
+ *    entre renders do mesmo projeto. Também conserta o botão "não faz nada": abrir projeto em
+ *    streaming deixa o blob null no front; agora o render nem depende dele.
+ */
+interface RenderSrc { path: string; key: string; servedUrl: string; cleanupOnDone: boolean; }
+
 // Aceita o vídeo (campo "video") + N imagens de popup (campos "img_*"), tratando
 // erro do multer como JSON (não HTML 500) para a UI mostrar mensagem limpa.
 const uploadRender = upload.any();
@@ -477,15 +489,41 @@ app.post("/api/render", (req, res) => {
 
     const files = (req.files as Express.Multer.File[]) ?? [];
     const videoFile = files.find((f) => f.fieldname === "video");
-    if (!videoFile) { res.status(400).json({ error: "Nenhum vídeo enviado (campo 'video')." }); return; }
 
     // Mapa: campo da imagem (ex: "img_0") → URL absoluta que o Remotion alcança.
     const imageMap: Record<string, string> = {};
     for (const f of files) {
-      if (f.fieldname !== "video") imageMap[f.fieldname] = `http://localhost:${PORT}/uploads/${f.filename}`;
+      if (f.fieldname !== "video" && f.fieldname !== "chromabg") imageMap[f.fieldname] = `http://localhost:${PORT}/uploads/${f.filename}`;
     }
     // Fundo do chroma (imagem/vídeo) → precisa do CAMINHO LOCAL (entra no ffmpeg, não no Remotion).
     const chromaBgPath = files.find((f) => f.fieldname === "chromabg")?.path ?? null;
+
+    // Resolve a fonte: upload OU vídeo do projeto salvo (sem re-upload).
+    let src: RenderSrc;
+    if (videoFile) {
+      src = { path: videoFile.path, key: videoFile.filename, servedUrl: `http://localhost:${PORT}/uploads/${videoFile.filename}`, cleanupOnDone: true };
+    } else {
+      let p0: { projectId?: string; sourceVideo?: string } = {};
+      try { p0 = JSON.parse(req.body.props ?? "{}"); } catch { /* props inválido */ }
+      const projectId = String(p0.projectId ?? "");
+      // nome do arquivo-fonte DESTA sessão (pode ser um uploads/ recém-"Concluído" ainda não salvo).
+      let bare = String(p0.sourceVideo ?? "").replace(/.*\//, "");
+      const achar = (): { path: string; servedUrl: string } | null => {
+        if (!bare) return null;
+        const up = path.join(UPLOAD_DIR, bare);
+        if (fs.existsSync(up)) return { path: up, servedUrl: `http://localhost:${PORT}/uploads/${bare}` };
+        if (projectId) { const ap = assetFsPath(projectId, bare); if (fs.existsSync(ap)) return { path: ap, servedUrl: `http://localhost:${PORT}/projects/${projectId}/assets/${bare}` }; }
+        return null;
+      };
+      let achado = achar();
+      // fallback: lê o vídeo SALVO do projeto (front antigo, ou sourceVideo ausente nos props).
+      if (!achado && projectId) {
+        try { bare = String(readProject(projectId).document.sourceVideo ?? "").replace(/.*\//, ""); achado = achar(); }
+        catch (e) { res.status(400).json({ error: `Não foi possível abrir o projeto: ${(e as Error).message}` }); return; }
+      }
+      if (!achado) { res.status(400).json({ error: "Nenhum vídeo enviado e vídeo de origem não encontrado no servidor. Salve o projeto e tente de novo." }); return; }
+      src = { path: achado.path, key: bare, servedUrl: achado.servedUrl, cleanupOnDone: false };
+    }
 
     const jobId = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     jobs.set(jobId, { status: "preparing", progress: 0 });
@@ -495,7 +533,7 @@ app.post("/api/render", (req, res) => {
     // este endpoint (o botao "Renderizar MP4" do studio, o mais usado) furaria o teto e
     // levaria os 8 nucleos da KVM8, que e a maquina de PROD dos 220 clientes.
     // O job fica em "preparing" enquanto espera vaga — a UI ja trata esse estado.
-    comVaga(() => runRender(jobId, videoFile, req.body.props, imageMap, chromaBgPath)).catch((e) => {
+    comVaga(() => runRender(jobId, src, req.body.props, imageMap, chromaBgPath)).catch((e) => {
       jobs.set(jobId, { status: "error", progress: 0, error: (e as Error).message });
     });
   });
@@ -534,9 +572,10 @@ function resolveAssetPath(ref: string, projectId?: string): string | null {
   return projectId ? assetFsPath(projectId, file) : u; // devolve o esperado (erro legível depois)
 }
 
-async function runRender(jobId: string, file: Express.Multer.File, propsStr: string, imageMap: Record<string, string> = {}, chromaBgPath: string | null = null) {
+async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageMap: Record<string, string> = {}, chromaBgPath: string | null = null) {
   const job = jobs.get(jobId)!;
   const outPath = path.join(OUT_DIR, `${jobId}.mp4`);
+  const uploadsUrl = (n: string) => `http://localhost:${PORT}/uploads/${n}`;
 
   // Timeout de segurança: se o matting (fase preparing) travar, aborta e mata
   // a árvore de processos (python + ffmpeg) para não deixar zumbi comendo CPU.
@@ -585,8 +624,8 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
     // Se CHROMA ativo: assa keying→despill→fundo→cor num MP4 opaco (ordem = shader do
     // preview). O Remotion sobrepõe popups/legendas SEM cor, como no preview.
     // Senão: pré-passe de cor tradicional (correção+LUT no vídeo inteiro).
-    let sourceFilename = file.filename; // servido em /uploads
-    let sourcePath = file.path;         // caminho local
+    let sourceServedUrl = src.servedUrl; // URL que o Remotion busca (sem pré-passo)
+    let sourcePath = src.path;           // caminho local (entra nos pré-passos ffmpeg)
     const colorHash = crypto.createHash("md5").update(JSON.stringify(props.color ?? {})).digest("hex").slice(0, 8);
     const colorActive = props.color && !isColorNeutral(props.color);
     const chromaActive = isChromaActive(props.chroma);
@@ -598,7 +637,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
       .update(JSON.stringify(props.chroma) + JSON.stringify(props.color) + `${width}x${height}`)
       .digest("hex").slice(0, 8);
     const commonPass = {
-      inputPath: file.path,
+      inputPath: src.path,
       chroma: props.chroma,
       color: props.color ?? {},
       userLutPath: props.color?.lut?.file ? resolveAssetPath(props.color.lut.file, props.projectId) : null,
@@ -610,34 +649,34 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
       // EM CAMADAS: fundo (plano de vídeo) + pessoa transparente por cima do popup "atrás".
       console.log(`[EXPORT] job ${jobId}: CHROMA em camadas (fundo + pessoa transparente)…`);
       const t0 = Date.now();
-      const bgName = `chromabg-${file.filename}-${chromaHash}.mp4`;
-      const personName = `chromaperson-${file.filename}-${chromaHash}.webm`;
+      const bgName = `chromabg-${src.key}-${chromaHash}.mp4`;
+      const personName = `chromaperson-${src.key}-${chromaHash}.webm`;
       const bgOut = path.join(UPLOAD_DIR, bgName);
       const personOut = path.join(UPLOAD_DIR, personName);
       await chromaBackgroundPass({ ...commonPass, outputPath: bgOut });
       await chromaPersonPass({ ...commonPass, outputPath: personOut });
       console.log(`[EXPORT] job ${jobId}: chroma camadas ok (${Date.now() - t0}ms)`);
-      sourceFilename = bgName;
+      sourceServedUrl = uploadsUrl(bgName);
       sourcePath = bgOut;
-      personSrc = `http://localhost:${PORT}/uploads/${personName}`;
+      personSrc = uploadsUrl(personName);
     } else if (chromaActive) {
-      const outName = `chroma-${file.filename}-${chromaHash}.mp4`;
+      const outName = `chroma-${src.key}-${chromaHash}.mp4`;
       const outPathC = path.join(UPLOAD_DIR, outName);
       console.log(`[EXPORT] job ${jobId}: pré-passe de CHROMA (keying+fundo+cor)…`);
       const t0 = Date.now();
       await chromaPrePass({ ...commonPass, outputPath: outPathC });
       console.log(`[EXPORT] job ${jobId}: chroma ok (${Date.now() - t0}ms)`);
-      sourceFilename = outName;
+      sourceServedUrl = uploadsUrl(outName);
       sourcePath = outPathC;
     } else if (colorActive) {
       console.log(`[EXPORT] job ${jobId}: cor ATIVA`);
       const hash = crypto.createHash("md5").update(JSON.stringify(props.color) + `${width}x${height}`).digest("hex").slice(0, 8);
-      const corrName = `color-${file.filename}-${hash}.mp4`;
+      const corrName = `color-${src.key}-${hash}.mp4`;
       const corrPath = path.join(UPLOAD_DIR, corrName);
       console.log(`[EXPORT] job ${jobId}: pré-passe de cor…`);
       const t0 = Date.now();
       await colorPrePass({
-        inputPath: file.path,
+        inputPath: src.path,
         color: props.color,
         // resolve o .cube nos assets do projeto OU em uploads (sessão nova)
         userLutPath: props.color.lut?.file ? resolveAssetPath(props.color.lut.file, props.projectId) : null,
@@ -646,7 +685,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
         signal: ac.signal,
       });
       console.log(`[EXPORT] job ${jobId}: cor ok (${Date.now() - t0}ms)`);
-      sourceFilename = corrName;
+      sourceServedUrl = uploadsUrl(corrName);
       sourcePath = corrPath;
     } else {
       console.log(`[EXPORT] job ${jobId}: sem chroma, cor neutra (pulada)`);
@@ -669,7 +708,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
     // RVM só quando NÃO há chroma (com chroma a pessoa vem do keying).
     for (const p of (chromaActive ? [] : popups).filter((p: any) => p?.type === "support" && p?.behindSubject)) {
       // cache-bust por cor: se a cor mudar, o alpha (que sai do vídeo corrigido) é regerado.
-      const outFile = `alpha-${file.filename}-${p.id}-${colorHash}.webm`;
+      const outFile = `alpha-${src.key}-${p.id}-${colorHash}.webm`;
       try {
         console.log(`[EXPORT] matting popup ${p.id} do vídeo ${colorActive ? "corrigido" : "original"} (${p.at}s +${p.duration}s)…`);
         await getMattingProvider(p.mattingModel).generateAlphaVideo({
@@ -715,7 +754,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
       if (plan.segments.length > 0) {
         const cutsHash = crypto.createHash("md5")
           .update(JSON.stringify(props.cuts ?? []) + `:${props.durationSec}`).digest("hex").slice(0, 8);
-        const wavName = `audio_decupado-${file.filename}-${cutsHash}${tratadoTag}.wav`;
+        const wavName = `audio_decupado-${src.key}-${cutsHash}${tratadoTag}.wav`;
         const wavPath = path.join(UPLOAD_DIR, wavName);
         if (!fs.existsSync(wavPath)) {
           await renderDecupadoAudio(audioBase, plan.segments.map((s) => ({ srcStart: s.srcStart, srcEnd: s.srcEnd })), wavPath);
@@ -735,7 +774,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
     clearTimeout(prepTimer); // saiu de preparing; render tem timeout próprio
     console.log(`[EXPORT] job ${jobId}: iniciando render`);
     await renderVideo({
-      videoSrc: `http://localhost:${PORT}/uploads/${sourceFilename}`,
+      videoSrc: sourceServedUrl,
       audioSrc, // WAV decupado (fonte única); undefined → áudio dos vídeos (fallback)
       personSrc, // chroma em camadas: pessoa transparente por cima do popup "atrás"
       transcript: props.transcript ?? [],
@@ -783,7 +822,7 @@ async function runRender(jobId: string, file: Express.Multer.File, propsStr: str
     job.error = (e as Error).message || "Falha desconhecida no render";
   } finally {
     clearTimeout(prepTimer);
-    fs.rm(file.path, () => {});
+    if (src.cleanupOnDone) fs.rm(src.path, () => {}); // só apaga o upload; o vídeo do projeto fica.
   }
 }
 

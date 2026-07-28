@@ -37,6 +37,7 @@ function capFullHD(w: number, h: number) {
  */
 export function ExportPanel({
   videoFile, transcript, style, durationSec, cuts, zooms, popups, color, chroma, music, audio, projectId, captions,
+  sourceVideo, docWidth, docHeight,
 }: {
   videoFile: File | null;
   transcript: TranscriptSegment[];
@@ -53,6 +54,12 @@ export function ExportPanel({
   /** Tratamento do audio da fala — o backend aplica antes de montar o audio do render. */
   audio?: AudioSettings;
   projectId: string | null;
+  /** Ref do vídeo-fonte desta sessão (uploads/ ou assets do projeto). Com projeto, o backend
+   *  renderiza a partir DELE — sem re-upload (rápido) e mesmo que o blob local não tenha chegado. */
+  sourceVideo?: string;
+  /** Dimensões autoritativas (docExtra, já corrigidas de rotação) — não dependem do blob local. */
+  docWidth?: number;
+  docHeight?: number;
 }) {
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [state, setState] = useState<State>({ phase: "idle" });
@@ -67,10 +74,18 @@ export function ExportPanel({
   }, [videoFile]);
 
   async function render() {
-    if (!videoFile) { alert("O vídeo ainda está carregando (abertura em streaming) — aguarde alguns segundos e exporte de novo."); return; }
+    // Com PROJETO salvo, o backend renderiza a partir do vídeo já no servidor — NÃO re-envia o
+    // blob (rápido) e funciona mesmo se a abertura em streaming ainda não trouxe o arquivo.
+    // Sem projeto (sessão nova não salva), aí sim precisa do blob local pra subir.
+    const usarServidor = !!projectId;
+    if (!usarServidor && !videoFile) {
+      // alert() é engolido dentro do iframe do OS → mostra o erro no próprio card.
+      setState({ phase: "error", message: "O vídeo ainda está carregando — aguarde alguns segundos e exporte de novo (ou salve o projeto)." });
+      return;
+    }
     setState({ phase: "preparing" });
     const form = new FormData();
-    form.append("video", videoFile);
+    if (!usarServidor && videoFile) form.append("video", videoFile);
 
     // As imagens dos popups (data URL base64) vão como ARQUIVOS separados, e no
     // props ficam só tokens "ref:img_N" — mantém o JSON leve (evita o limite do multipart).
@@ -104,7 +119,9 @@ export function ExportPanel({
 
     const propsJson = JSON.stringify({
       transcript, cuts, zooms, popups: popupsOut, style, color, chroma: chromaOut, music, audio, durationSec, projectId, captions,
-      fps: 30, width: dims?.w ?? 1080, height: dims?.h ?? 1920,
+      sourceVideo, // deixa o backend achar o vídeo no servidor (render sem re-upload)
+      // dims autoritativas do doc (corrigidas de rotação); o metadata do blob é só refino.
+      fps: 30, width: docWidth || dims?.w || 1080, height: docHeight || dims?.h || 1920,
     });
     form.append("props", propsJson);
 

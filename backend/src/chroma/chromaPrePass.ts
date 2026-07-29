@@ -36,8 +36,10 @@ function killTree(pid: number | undefined) {
   } catch { /* já morreu */ }
 }
 
-/** Roda o ffmpeg com cancelamento; rejeita com o stderr final se falhar. */
-function runFfmpeg(args: string[], cwd: string, signal: AbortSignal | undefined, label: string): Promise<void> {
+/** Roda o ffmpeg com cancelamento; rejeita com o stderr final se falhar.
+ *  `onTime` recebe os segundos JÁ PROCESSADOS (parse do `time=` do stderr) — é o heartbeat
+ *  que diferencia "demorado mas vivo" de "travado" no watchdog do export. */
+function runFfmpeg(args: string[], cwd: string, signal: AbortSignal | undefined, label: string, onTime?: (sec: number) => void): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const proc = spawn("ffmpeg", args, { cwd });
     const onAbort = () => { killTree(proc.pid); reject(new Error(`${label} cancelado (timeout)`)); };
@@ -46,7 +48,13 @@ function runFfmpeg(args: string[], cwd: string, signal: AbortSignal | undefined,
       signal.addEventListener("abort", onAbort, { once: true });
     }
     let stderr = "";
-    proc.stderr.on("data", (d) => (stderr += d));
+    proc.stderr.on("data", (d) => {
+      stderr += d;
+      if (onTime) {
+        const m = String(d).match(/time=(\d+):(\d+):([\d.]+)/);
+        if (m) onTime(+m[1] * 3600 + +m[2] * 60 + +m[3]);
+      }
+    });
     proc.on("error", reject);
     proc.on("close", (code) => {
       signal?.removeEventListener("abort", onAbort);
@@ -151,7 +159,10 @@ function bgInputs(ch: ChromaSettings, bgPath: string | null, W: number, H: numbe
 }
 
 const OUT_H264 = [
-  "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+  // ultrafast + crf 16: isto é um INTERMEDIÁRIO (o Remotion re-encoda o final). Preset caro
+  // aqui só queimava minutos de CPU — com vídeo longo estourava o watchdog ("cancelado
+  // timeout"). ultrafast é ~2-3x mais rápido; o crf mais baixo compensa a qualidade.
+  "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-pix_fmt", "yuv420p",
   // MESMAS tags do colorPrePass/matting (BT.709 tv) → decode idêntico no Chromium.
   "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
   "-movflags", "+faststart",
@@ -170,6 +181,9 @@ export interface ChromaPassInput {
   fps?: number;         // framerate de SAÍDA (CFR). Normaliza entradas VFR (celular) — sem isto o
                         // x264 podia falhar ao abrir ("incorrect parameters such as rate"). Default 30.
   signal?: AbortSignal;
+  /** Heartbeat: segundos já processados pelo ffmpeg. O watchdog do export usa isto pra só
+   *  matar processo TRAVADO (sem avanço), nunca um encode longo que está progredindo. */
+  onProgress?: (sec: number) => void;
 }
 
 /** Dimensão par e ≥ 2 (yuv420p/H.264 exigem par; ímpar quebra o filtergraph e o encoder). */
@@ -214,7 +228,7 @@ export async function chromaPrePass(input: ChromaPassInput): Promise<string> {
       ? ["-t", (input.durationSec + 0.6).toFixed(3)]
       : ["-shortest"]),
     "-c:a", "aac", "-b:a", "192k", "-f", "mp4", part,
-  ], path.dirname(input.outputPath), input.signal, "chroma");
+  ], path.dirname(input.outputPath), input.signal, "chroma", input.onProgress);
   await promover(part, input.outputPath, "chroma");
 
   if (cube) fs.rm(cube, () => {});
@@ -245,12 +259,15 @@ export async function chromaPersonPass(input: ChromaPassInput): Promise<string> 
     "-filter_complex", parts.join(";"),
     "-map", "[out]",
     // WebM VP9 com alpha. -auto-alt-ref 0 é obrigatório p/ preservar o alpha.
+    // realtime/cpu-used/row-mt: o deadline default do libvpx ("good") é LENTÍSSIMO — com vídeo
+    // longo estourava o watchdog. realtime+cpu-used 5 é ~5-10x mais rápido (intermediário).
     "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", "-b:v", "0", "-crf", "20",
+    "-deadline", "realtime", "-cpu-used", "5", "-row-mt", "1",
     "-r", String(fps),
     ...(input.durationSec && input.durationSec > 0 ? ["-t", (input.durationSec + 0.6).toFixed(3)] : []),
     "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
     "-an", "-f", "webm", part, // -f webm: o nome termina em `.part` (não dá pra inferir o muxer)
-  ], path.dirname(input.outputPath), input.signal, "chroma-pessoa");
+  ], path.dirname(input.outputPath), input.signal, "chroma-pessoa", input.onProgress);
   await promover(part, input.outputPath, "chroma-pessoa");
 
   if (cube) fs.rm(cube, () => {});
@@ -292,7 +309,7 @@ export async function chromaBackgroundPass(input: ChromaPassInput): Promise<stri
     // -shortest SÓ sem durationSec (o áudio cortaria a folga do tpad de volta).
     ...OUT_H264, "-r", String(fps), "-c:a", "aac", "-b:a", "192k",
     ...(durArg.length ? [] : ["-shortest"]), "-f", "mp4", part,
-  ], path.dirname(input.outputPath), input.signal, "chroma-fundo");
+  ], path.dirname(input.outputPath), input.signal, "chroma-fundo", input.onProgress);
   await promover(part, input.outputPath, "chroma-fundo");
 
   if (cube) fs.rm(cube, () => {});

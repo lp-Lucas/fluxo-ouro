@@ -9,7 +9,7 @@ import { isChromaActive, type ChromaSettings } from "../../../../shared/chroma";
 
 type State =
   | { phase: "idle" }
-  | { phase: "preparing" }
+  | { phase: "preparing"; progress?: number } // progress = % do pré-passo (chroma/cor), quando houver
   | { phase: "rendering"; progress: number }
   | { phase: "done"; url: string }
   | { phase: "error"; message: string };
@@ -144,7 +144,7 @@ export function ExportPanel({
       try {
         const r = await fetch(comBase(`/api/render/progress/${jobId}`));
         const j = await r.json();
-        if (j.status === "preparing") setState({ phase: "preparing" });
+        if (j.status === "preparing") setState({ phase: "preparing", progress: j.progress });
         else if (j.status === "rendering") setState({ phase: "rendering", progress: j.progress ?? 0 });
         else if (j.status === "done") {
           clearInterval(iv);
@@ -196,7 +196,9 @@ export function ExportPanel({
               background: "linear-gradient(180deg, #f6f6f6, #d9d9d9)", color: "#1a1a1a",
               fontWeight: 700, fontSize: 15, padding: "12px 44px", borderRadius: 999,
             }}>
-            {state.phase === "preparing" ? "Preparando…" : state.phase === "rendering" ? `Renderizando ${pct}%` : "Renderizar MP4"}
+            {state.phase === "preparing"
+              ? (state.progress ? `Preparando ${Math.round(state.progress * 100)}%…` : "Preparando…")
+              : state.phase === "rendering" ? `Renderizando ${pct}%` : "Renderizar MP4"}
           </button>
         )}
 

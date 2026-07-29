@@ -554,7 +554,11 @@ app.get("/api/render/result/:id", (req, res) => {
   });
 });
 
-const PREPARING_TIMEOUT_MS = 5 * 60 * 1000; // 5 min sem sair de "preparing" (matting travado)
+// Janela de STALL do preparo: aborta só se ficar 5 min SEM AVANÇO (heartbeat do ffmpeg).
+// Antes era teto FIXO de 5 min no "preparing" inteiro — um pré-passo de chroma de vídeo longo
+// (que estava PROGREDINDO) era morto no meio: "chroma cancelado (timeout)". Processo vivo
+// nunca mais é morto; processo travado continua caindo em 5 min.
+const PREPARING_STALL_MS = 5 * 60 * 1000;
 
 /**
  * Resolve o caminho local de um asset (ex: .cube) tanto se ele estiver nos
@@ -577,12 +581,14 @@ async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageM
   const outPath = path.join(OUT_DIR, `${jobId}.mp4`);
   const uploadsUrl = (n: string) => `http://localhost:${PORT}/uploads/${n}`;
 
-  // Timeout de segurança: se o matting (fase preparing) travar, aborta e mata
-  // a árvore de processos (python + ffmpeg) para não deixar zumbi comendo CPU.
+  // Watchdog de STALL: mata o preparo só se ficar PREPARING_STALL_MS sem heartbeat
+  // (ffmpeg parado / matting travado). Encode longo que avança nunca é morto.
   const ac = new AbortController();
-  const prepTimer = setTimeout(() => {
-    if (job.status === "preparing") ac.abort();
-  }, PREPARING_TIMEOUT_MS);
+  let lastBeat = Date.now();
+  const beat = () => { lastBeat = Date.now(); };
+  const prepTimer = setInterval(() => {
+    if (job.status === "preparing" && Date.now() - lastBeat > PREPARING_STALL_MS) ac.abort();
+  }, 15000);
 
   try {
     // (b) PONTO 2 — logo após o multipart: tamanho do campo props e resumo pós-parse.
@@ -643,6 +649,12 @@ async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageM
       userLutPath: props.color?.lut?.file ? resolveAssetPath(props.color.lut.file, props.projectId) : null,
       bgPath: chromaBgPath, // fundo imagem/vídeo (local) — null se cor/nenhum
       width, height, durationSec: props.durationSec, fps, signal: ac.signal,
+      // heartbeat (não morre em stall) + % do preparo visível na UI.
+      onProgress: (sec: number) => {
+        beat();
+        const d = Number(props.durationSec ?? 0);
+        if (d > 0) job.progress = Math.min(0.99, sec / d);
+      },
     };
 
     if (chromaLayered) {
@@ -771,7 +783,7 @@ async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageM
     }
 
     job.status = "rendering";
-    clearTimeout(prepTimer); // saiu de preparing; render tem timeout próprio
+    clearInterval(prepTimer); // saiu de preparing; render tem timeout próprio
     console.log(`[EXPORT] job ${jobId}: iniciando render`);
     await renderVideo({
       videoSrc: sourceServedUrl,
@@ -821,7 +833,7 @@ async function runRender(jobId: string, src: RenderSrc, propsStr: string, imageM
     job.status = "error";
     job.error = (e as Error).message || "Falha desconhecida no render";
   } finally {
-    clearTimeout(prepTimer);
+    clearInterval(prepTimer);
     if (src.cleanupOnDone) fs.rm(src.path, () => {}); // só apaga o upload; o vídeo do projeto fica.
   }
 }

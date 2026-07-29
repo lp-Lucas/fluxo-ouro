@@ -1405,6 +1405,17 @@ app.post("/api/popup-element", (req, res) => {
  * o texto vai VERBATIM ao gpt-image junto das imagens (na ordem anexada). Sem
  * templates, sem reescrita — o controle é 100% do usuário, como no ChatGPT.
  */
+/**
+ * REGRA DURA anti-colagem (sufixo de TODO prompt de geração de design do FLOW).
+ * Caso real: com imagem de referência, o gpt-image às vezes DUPLICAVA a tela — saía
+ * split-screen com 2+ celulares, colagem com telas de WhatsApp inventadas, grades de
+ * variações. A regra é injetada no ponto ÚNICO de envio (cobre autor, compilador e chat
+ * verbatim) e fica gravada no .prompt.txt de auditoria junto com o resto.
+ */
+const SINGLE_ARTBOARD_RULE = `
+
+HARD RULE — SINGLE ARTBOARD, NO COLLAGE: produce exactly ONE artwork containing ONE single screen/scene that fills the whole canvas. NEVER duplicate the reference image; NEVER place two or more phone screens or panels side by side; NEVER create collages, split-screens, grids, storyboards, before/after comparisons, or repeated variations of the same screen. Reference images are guidance for EDITING and STYLE only — do not paste them into the result as extra panels, and do not invent additional app screens (e.g. chat apps) that were not explicitly requested. If the reference shows one phone screen, the output must contain exactly one phone screen.`;
+
 app.post("/api/flow/design-chat", (req, res) => {
   try {
     const { projectId, phraseId, prompt, images = [], aspect = "9:16", texto, delta, identity, refs } = req.body ?? {};
@@ -1471,9 +1482,10 @@ app.post("/api/flow/design-chat", (req, res) => {
         console.log(`[FLOW] design-chat ${phraseId}: ${genRefs.length} imagem(ns), chat verbatim (source=raw)`);
       }
 
-      const { imageUrl } = await getImageProvider().generate({ prompt: finalPrompt, aspectRatio: String(aspect), references: genRefs, count: 1, signal, chatgptStyle: true });
+      const promptEnvio = finalPrompt + SINGLE_ARTBOARD_RULE;
+      const { imageUrl } = await getImageProvider().generate({ prompt: promptEnvio, aspectRatio: String(aspect), references: genRefs, count: 1, signal, chatgptStyle: true });
       await saveImageFit(imageUrl, asset.fsPath, w, h, signal, getImageProvider());
-      fs.writeFileSync(asset.fsPath + ".prompt.txt", audit + finalPrompt);
+      fs.writeFileSync(asset.fsPath + ".prompt.txt", audit + promptEnvio);
       fs.rm(tmpDir, { recursive: true, force: true }, () => {});
       return { imagePath: asset.url, ...(styleOut ?? {}) };
     });
@@ -1550,9 +1562,10 @@ app.post("/api/flow/gerar-design", (req, res) => {
         stylePath ? { path: stylePath, tag: "estilo" } : null,
         ...elementoPaths.map((p, i) => ({ path: p, tag: `elemento-${i + 1}` })),
       ].filter((x): x is { path: string; tag: string } => !!x);
-      const { imageUrl } = await getImageProvider().generate({ prompt: promptFinal, aspectRatio: String(aspect), references: genRefs, count: 1, signal, chatgptStyle: true });
+      const promptEnvio = promptFinal + SINGLE_ARTBOARD_RULE;
+      const { imageUrl } = await getImageProvider().generate({ prompt: promptEnvio, aspectRatio: String(aspect), references: genRefs, count: 1, signal, chatgptStyle: true });
       await saveImageFit(imageUrl, asset.fsPath, w, h, signal, getImageProvider());
-      fs.writeFileSync(asset.fsPath + ".prompt.txt", `source: ${fonte}\npalavras: ${palavras}\n${auditExtra}---\n${promptFinal}`);
+      fs.writeFileSync(asset.fsPath + ".prompt.txt", `source: ${fonte}\npalavras: ${palavras}\n${auditExtra}---\n${promptEnvio}`);
       fs.rm(tmpDir, { recursive: true, force: true }, () => {});
       console.log(`[FLOW] gerar-design ${phraseId}: source=${fonte} (${palavras}p)`);
       return { imagePath: asset.url, source: fonte, palavras };
